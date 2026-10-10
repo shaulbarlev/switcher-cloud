@@ -25,6 +25,8 @@ async def async_setup_entry(
         fam = Family(st.get("family", "unknown"))
         if fam not in SWITCHABLE:
             continue
+        if fam is Family.MIX and st.get("line_type") == 12:
+            continue                        # runner line → cover platform
         if fam is Family.SWITCH:
             for i in range(1, gang_count(st) + 1):
                 entities.append(SwitcherCloudSwitch(coordinator, did, gang=i))

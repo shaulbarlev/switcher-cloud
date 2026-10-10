@@ -31,6 +31,7 @@ async def async_setup_entry(
         SwitcherCloudCover(coordinator, did)
         for did, st in coordinator.data.items()
         if Family(st.get("family", "unknown")) is Family.CURTAIN
+        or (Family(st.get("family", "unknown")) is Family.MIX and st.get("line_type") == 12)
     )
 
 

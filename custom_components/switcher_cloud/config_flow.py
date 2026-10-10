@@ -22,18 +22,21 @@ _LOGGER = logging.getLogger(__name__)
 
 STEP_USER_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_EMAIL): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username")
+        vol.Required(CONF_EMAIL): vol.All(
+            TextSelector(TextSelectorConfig(type=TextSelectorType.EMAIL, autocomplete="username")),
+            vol.Length(max=32),           # protocol field is 32 bytes
         ),
-        vol.Required(CONF_PASSWORD): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")
+        vol.Required(CONF_PASSWORD): vol.All(
+            TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")),
+            vol.Length(max=32),
         ),
     }
 )
 STEP_REAUTH_SCHEMA = vol.Schema(
     {
-        vol.Required(CONF_PASSWORD): TextSelector(
-            TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")
+        vol.Required(CONF_PASSWORD): vol.All(
+            TextSelector(TextSelectorConfig(type=TextSelectorType.PASSWORD, autocomplete="current-password")),
+            vol.Length(max=32),
         ),
     }
 )
@@ -62,23 +65,27 @@ class SwitcherCloudConfigFlow(ConfigFlow, domain=DOMAIN):
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> ConfigFlowResult:
         errors: dict[str, str] = {}
         if user_input is not None:
-            account = user_input[CONF_EMAIL].strip().lower()
-            try:
-                info = await validate_input(self.hass, account, user_input[CONF_PASSWORD])
-            except CannotConnect:
-                errors["base"] = "cannot_connect"
-            except InvalidAuth:
-                errors["base"] = "invalid_auth"
-            except Exception:  # noqa: BLE001
-                _LOGGER.exception("unexpected error")
-                errors["base"] = "unknown"
+            account = user_input[CONF_EMAIL].strip()      # keep case: vendor may compare exactly
+            password = user_input[CONF_PASSWORD]
+            if len(account.encode()) > 32 or len(password.encode()) > 32:
+                errors["base"] = "too_long"
             else:
-                await self.async_set_unique_id(f"switcher_{info['uid']}")
-                self._abort_if_unique_id_configured()
-                return self.async_create_entry(
-                    title="Switcher Cloud",
-                    data={CONF_ACCOUNT: account, CONF_PASSWORD: user_input[CONF_PASSWORD]},
-                )
+                try:
+                    info = await validate_input(self.hass, account, password)
+                except CannotConnect:
+                    errors["base"] = "cannot_connect"
+                except InvalidAuth:
+                    errors["base"] = "invalid_auth"
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("unexpected error")
+                    errors["base"] = "unknown"
+                else:
+                    await self.async_set_unique_id(f"switcher_{info['uid']}")
+                    self._abort_if_unique_id_configured()
+                    return self.async_create_entry(
+                        title=account,
+                        data={CONF_ACCOUNT: account, CONF_PASSWORD: password},
+                    )
         return self.async_show_form(step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors)
 
     async def async_step_reauth(self, entry_data: dict[str, Any]) -> ConfigFlowResult:

@@ -14,3 +14,7 @@ spec/
 .DS_Store
 __pycache__/
 *.pyc
+KNOWLEDGE.md
+bps_*.md
+dash_home.json
+timer-ui-mock.html

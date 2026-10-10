@@ -1,0 +1,15 @@
+{
+  "entity": {
+    "number": {
+      "run_timer": { "default": "mdi:timer-play-outline" }
+    },
+    "sensor": {
+      "current": { "default": "mdi:current-ac" },
+      "energy": { "default": "mdi:lightning-bolt" },
+      "time_on": { "default": "mdi:timer-outline" }
+    },
+    "water_heater": {
+      "boiler": { "default": "mdi:water-boiler" }
+    }
+  }
+}

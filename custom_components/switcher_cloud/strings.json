@@ -20,6 +20,7 @@
     "error": {
       "cannot_connect": "Failed to connect to the Switcher cloud",
       "invalid_auth": "Invalid email or password",
+      "too_long": "Email and password must be at most 32 characters (a limit of the Switcher protocol)",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -30,7 +31,11 @@
   },
   "entity": {
     "switch": {
-      "gang": { "name": "Switch {n}" }
+      "gang": { "name": "Switch {n}" },
+      "line": { "name": "Line {n}" }
+    },
+    "cover": {
+      "line": { "name": "Line {n}" }
     },
     "sensor": {
       "current": { "name": "Current" },
@@ -47,6 +52,7 @@
   "exceptions": {
     "device_unavailable": { "message": "The device is no longer in your Switcher account." },
     "unsupported": { "message": "On/off is not supported for {family} devices yet." },
-    "command_failed": { "message": "The Switcher cloud rejected the command: {error}" }
+    "command_failed": { "message": "The Switcher cloud rejected the command: {error}" },
+    "invalid_auth": { "message": "The Switcher cloud rejected the stored credentials; re-authentication is required." }
   }
 }

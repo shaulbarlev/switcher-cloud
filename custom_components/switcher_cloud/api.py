@@ -82,7 +82,11 @@ def build_packet(cmd, body, serial, session, *, session_key=b"\x00" * 32,
 
 
 def parse_packet(pkt: bytes) -> dict:
+    if len(pkt) < HEADER_LEN + 4 or pkt[0:2] != START_FLAG or pkt[38:40] != END_FLAG:
+        raise ConnectionError("bad frame")                 # desync → reconnect
     total = struct.unpack_from("<H", pkt, 2)[0]
+    if total < HEADER_LEN + 4 or total > len(pkt):
+        raise ConnectionError("bad frame length")
     return {
         "cmd": struct.unpack_from("<H", pkt, 6)[0],
         "session": struct.unpack_from("<I", pkt, 8)[0],
@@ -117,9 +121,9 @@ def _b_c_encrypt(pwd: str) -> bytes:
 
 def _l(n: int, s: str) -> bytes:
     e = s.encode() if s else b""
-    if not e or n < len(e):
-        return b"\x00" * n
-    return e[:n] + b"\x00" * (n - len(e))
+    if len(e) > n:
+        raise ValueError(f"field longer than {n} bytes")
+    return e + b"\x00" * (n - len(e))
 
 
 def _login_body(account: str, password: str, ts: int) -> bytes:
@@ -161,23 +165,6 @@ def parse_push(body: bytes) -> dict | None:
     }
 
 
-def parse_workstatus(b: bytes) -> dict:
-    """OgeSPlugS216Model.parseWorkStatus (decompiled, capture-verified):
-    wifiPower u8@0, switchState @1, power int32@9 (W = /220), voltage int32@13,
-    elect int32@17 (kWh = /3600000/1000), u16@21, lasttime int32@23,
-    opentime int32@27, isdelay u8@31."""
-    if len(b) < 32:
-        return {}
-    def u32(o):
-        return struct.unpack_from("<I", b, o)[0]
-    return {
-        "on": b[1] == 1,
-        "power_raw": u32(9),
-        "energy_kwh": round(u32(17) / 3_600_000 / 1000, 2),
-        "lasttime": u32(23),
-        "secs_on": u32(27),
-        "isdelay": b[31],
-    }
 
 
 # ---- client ---------------------------------------------------------------------
@@ -209,6 +196,7 @@ class SwitcherClient:
         self._send_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
         self.auth_error: SwitcherAuthError | None = None
+        self._warned_types: set = set()
         self._listener: threading.Thread | None = None
         self._stopping = threading.Event()
         self._on_push = None                 # callable(dict) in caller's thread
@@ -230,6 +218,8 @@ class SwitcherClient:
                 raise ConnectionError("closed during header")
             hdr += chunk
         total = struct.unpack_from("<H", hdr, 2)[0]
+        if hdr[0:2] != START_FLAG or total < HEADER_LEN + 4:
+            raise ConnectionError("bad frame header")       # desync → reconnect
         rest = b""
         while len(hdr) + len(rest) < total:
             chunk = s.recv(total - len(hdr) - len(rest))
@@ -304,15 +294,21 @@ class SwitcherClient:
         reconnects = 0
         while not self._stopping.is_set():
             try:
-                if self._sock is None:
+                s = self._sock
+                if s is None:
                     self.connect()
+                    s = self._sock
+                    if reconnects:
+                        _LOGGER.info("switcher connection re-established")
                     reconnects = 0
                     if self._on_reconnect:
                         try:
                             self._on_reconnect()
                         except Exception:  # noqa: BLE001
                             _LOGGER.exception("on_reconnect callback failed")
-                self._sock.settimeout(HEARTBEAT_INTERVAL)
+                if s is None:               # closed by request() meanwhile
+                    continue
+                s.settimeout(HEARTBEAT_INTERVAL)
                 p = parse_packet(self._recv_packet())
                 self._dispatch(p)
             except socket.timeout:
@@ -330,8 +326,9 @@ class SwitcherClient:
                 self.close()
                 reconnects += 1
                 delay = min(3 * reconnects, 30)
-                _LOGGER.warning("switcher connection lost (%s); retry in %ss",
-                                err, delay)
+                # WARNING once, then DEBUG — an overnight outage must not spam the log
+                log = _LOGGER.warning if reconnects == 1 else _LOGGER.debug
+                log("switcher connection lost (%s); retry in %ss", err, delay)
                 if self._stopping.wait(delay):
                     break
 
@@ -389,7 +386,11 @@ class SwitcherClient:
                 return r
             except SwitcherAuthError:
                 raise
-            except (OSError, queue.Empty) as err:
+            except queue.Empty:
+                # no reply in time: don't tear down the shared socket for everyone;
+                # the listener's heartbeat decides if the connection is really dead
+                raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}") from None
+            except OSError as err:
                 self.close()
                 _LOGGER.debug("request 0x%04x failed (%s); reconnecting", cmd, err)
                 time.sleep(1)
@@ -410,10 +411,18 @@ class SwitcherClient:
         return data.get("DevList") or data.get("devList") or []
 
     def poll(self) -> dict[str, dict[str, Any]]:
-        """One executor job: device list + per-device state + decrypted pwd."""
+        """One executor job: device list + per-device state + decrypted pwd.
+        A malformed row is logged once and skipped, never kills the poll."""
         out: dict[str, dict[str, Any]] = {}
         for dev in self.get_devices():
-            st = self.device_state(dev)
+            try:
+                st = self.device_state(dev)
+            except Exception as err:  # noqa: BLE001
+                dt = dev.get("DeviceType") if isinstance(dev, dict) else "?"
+                if dt not in self._warned_types:
+                    self._warned_types.add(dt)
+                    _LOGGER.warning("skipping device type %s: %s", dt, err)
+                continue
             try:
                 st["device_pwd"] = self.device_password(dev)
             except Exception:  # noqa: BLE001 - pwd decrypt must not kill the poll
@@ -443,10 +452,6 @@ class SwitcherClient:
     def pwd_block(self, device_pwd: str) -> bytes:
         return _b_c_encrypt(device_pwd)
 
-    def set_switch(self, device_id: int, device_pwd: str, on: bool) -> None:
-        """On Wall / S216 on-off (kept for backwards compat; see devices.py)."""
-        from .devices import body_onwall
-        self.send_control(body_onwall(device_id, self.uid, _b_c_encrypt(device_pwd), on))
 
     @staticmethod
     def state_key(device: dict[str, Any]) -> str:

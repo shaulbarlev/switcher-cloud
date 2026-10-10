@@ -25,7 +25,7 @@ from .devices import (
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIRM_INTERVAL = 0.5     # s between confirm polls after a command (Shaul: fast)
+CONFIRM_INTERVAL = 0.5     # s between confirm polls after a command
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
 
 type SwitcherCloudConfigEntry = ConfigEntry["SwitcherCloudCoordinator"]
@@ -160,7 +160,9 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             else:
                 await self.hass.async_add_executor_job(self.client.send_control, body)
         except SwitcherAuthError as err:
-            raise ConfigEntryAuthFailed(str(err)) from err
+            # a service call can't trigger reauth itself; the next poll will.
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="invalid_auth") from err
         except Exception as err:  # noqa: BLE001
             raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed",
                                      translation_placeholders={"error": str(err)}) from err
@@ -184,5 +186,5 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             return await self.hass.async_add_executor_job(self.client.poll)
         except SwitcherAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
-        except (SwitcherApiError, OSError) as err:
+        except Exception as err:  # noqa: BLE001 - any transport/parse error = failed poll
             raise UpdateFailed(str(err)) from err

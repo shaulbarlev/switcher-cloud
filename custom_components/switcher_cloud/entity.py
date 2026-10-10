@@ -24,18 +24,24 @@ class SwitcherCloudEntity(CoordinatorEntity[SwitcherCloudCoordinator]):
         model = MODEL_NAMES.get(fam, "Unknown device")
         if fam not in VERIFIED:
             model = f"{model} (beta, unverified)"
+        # Mix panels: one HA device per physical panel (lines share the DID);
+        # entities are distinguished by name, not by device.
+        device_key = str(st.get("did")) if fam is Family.MIX else did
         connections = set()
         if st.get("dmac"):
             connections.add((CONNECTION_NETWORK_MAC, format_mac(st["dmac"])))
         self._attr_device_info = DeviceInfo(
-            identifiers={(DOMAIN, did)},
-            name=st.get("name") or f"Switcher {did}",
+            identifiers={(DOMAIN, device_key)},
+            name=st.get("name") or f"Switcher {device_key}",
             manufacturer="Switcher",
             model=model,
             model_id=st.get("device_type"),
             sw_version=st.get("firmware"),
             connections=connections,
         )
+        if fam is Family.MIX and st.get("line_no"):
+            self._attr_translation_key = "line"
+            self._attr_translation_placeholders = {"n": str(st["line_no"])}
 
     def _st(self) -> dict[str, Any]:
         return self.coordinator.data.get(self._did) or {}

@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import UnitOfTime
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
@@ -43,20 +43,22 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
     _attr_native_max_value = MAX_MINUTES
     _attr_native_step = 5
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
-    _attr_icon = "mdi:timer-play-outline"
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator, did)
         self._attr_unique_id = f"switcher_cloud_{did}_run_timer"
         self._requested: int = 0
 
-    @property
-    def native_value(self) -> float | None:
-        # Shows the requested run length while the device is on; the device
-        # does not report its remaining countdown in WorkStatus, so once it
-        # turns itself off the timer reads 0 again.
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        # The device doesn't report its remaining countdown in WorkStatus; once
+        # it turns itself off the requested run length is spent → show 0.
         if self._requested and not self._st().get("on"):
             self._requested = 0
+        super()._handle_coordinator_update()
+
+    @property
+    def native_value(self) -> float | None:
         return self._requested
 
     async def async_set_native_value(self, value: float) -> None:

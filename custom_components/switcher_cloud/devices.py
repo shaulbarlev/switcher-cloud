@@ -62,18 +62,6 @@ def classify(device_type: str) -> tuple[Family, int, int]:
     return Family.UNKNOWN, main, sub
 
 
-# OgeMixDeviceModel.java:104-125 — default line layout per subType when the
-# 0x1343 rows don't carry LineNo/LineType: (lineNos, lineTypes); type 3 = plug
-# /light line, 12 = runner line.
-MIX_DEFAULT_LINES = {
-    1: ((3, 2, 1), (3, 3, 12)),
-    2: ((3, 2, 1), (3, 12, 12)),
-    4: ((1,), (3,)),
-    7: ((1,), (3,)),
-    5: ((1, 2), (3, 3)),
-    8: ((1, 2), (3, 3)),
-    6: ((1, 2, 3), (3, 3, 3)),
-}
 
 
 # ---- body builders -------------------------------------------------------------
@@ -135,15 +123,6 @@ def body_plug_single(did, uid, pwd_plain: str, on: bool, isdelay: int = 0) -> by
     return b
 
 
-def body_plug_autooff(did, uid, pwd_block, line_no: int, autoclosing: int) -> bytes:
-    """Per-line auto-off: sub 0x0B len 5: lineNo u8, autoclosing u32 (48 B)
-    (OgeSPlugModel.java:70-76; app clamps nonzero <3660 to 3660)."""
-    b = _head(did, uid, pwd_block, 0x0B, 5)
-    b += bytes([line_no & 0xFF]) + struct.pack("<I", autoclosing)
-    return bytes(b)
-
-
-body_socket = body_plug      # OgeSocketModel is byte-identical to OgeSPlugModel here
 
 
 def body_switch(did, uid, pwd_block, index: int, on: bool) -> bytes:
@@ -310,8 +289,6 @@ def parse_plug(b: bytes, line_no: int = 0) -> State:
                      autoclosing=_u32(b, 22), isdelay=b[27])
     return State()
 
-
-parse_socket = parse_plug
 
 
 def parse_mix_line(b: bytes, line_no: int, line_type: int) -> State:
