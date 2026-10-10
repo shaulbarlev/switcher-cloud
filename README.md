@@ -31,7 +31,6 @@ This is unofficial and not affiliated with Switcher.
 - Lights get brightness, RGB, colour temperature and effects.
 - Current, energy and time remaining sensors, where the device reports them.
 - Live updates. One connection to the cloud stays open, so a change made in the app shows up a few seconds later.
-- Control is confirmed, not assumed. When you flip a switch the UI waits for the device to report the new state before it changes.
 - A reauthentication prompt when your Switcher password changes.
 - A diagnostics download with credentials and identifiers redacted.
 - Setup is a config flow. There is no YAML.
