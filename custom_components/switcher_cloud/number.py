@@ -52,17 +52,20 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
 
     @property
     def native_value(self) -> float | None:
-        # once the device reports off, the timer is spent
-        if not self._st().get("on"):
+        # Shows the requested run length while the device is on; the device
+        # does not report its remaining countdown in WorkStatus, so once it
+        # turns itself off the timer reads 0 again.
+        if self._requested and not self._st().get("on"):
             self._requested = 0
         return self._requested
 
     async def async_set_native_value(self, value: float) -> None:
         minutes = int(value)
-        self._requested = minutes
         if minutes <= 0:
+            self._requested = 0
             await self.coordinator.async_set_switch(self._did, False)
         else:
             await self.coordinator.async_set_switch(
                 self._did, True, run_seconds=minutes * 60)
+            self._requested = minutes       # set after confirm so the reset can't race
         self.async_write_ha_state()

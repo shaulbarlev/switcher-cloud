@@ -9,5 +9,5 @@
   "issue_tracker": "https://github.com/shaulbarlev/switcher-cloud/issues",
   "loggers": [],
   "requirements": ["pycryptodome>=3.20"],
-  "version": "1.4.0"
+  "version": "1.4.1"
 }
