@@ -275,7 +275,9 @@ class SwitcherClient:
             struct.pack_into("<H", b, 41, 5)
             b[43] = 1 if on else 0
             struct.pack_into("<I", b, 44, 0)
-            p = self._send(0x0201, bytes(b))
+            # control body is sent PLAINTEXT (live capture); only the embedded
+            # pwd block is pre-encrypted with the native key
+            p = self._send(0x0201, bytes(b), encrypted=False)
             if p["errcode"] != 0:
                 raise SwitcherApiError(f"control errcode={p['errcode']}")
         self._retrying(go)
