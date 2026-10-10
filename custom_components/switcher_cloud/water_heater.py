@@ -68,13 +68,4 @@ class SwitcherCloudWaterHeater(
         return STATE_ON if st.get("on") else STATE_OFF
 
     async def async_set_operation_mode(self, operation_mode: str) -> None:
-        st = self.coordinator.data.get(self._did)
-        if not st or not st.get("device_pwd"):
-            raise HomeAssistantError("device password unavailable")
-        try:
-            await asyncio.to_thread(
-                self.coordinator.client.set_switch,
-                st["did_int"], st["device_pwd"], operation_mode == STATE_ON)
-        except Exception as err:  # noqa: BLE001
-            raise HomeAssistantError(str(err)) from err
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_switch(self._did, operation_mode == STATE_ON)

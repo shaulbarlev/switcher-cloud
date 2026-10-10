@@ -8,7 +8,7 @@ from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
@@ -33,6 +33,37 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
         self.client = SwitcherClient(
             entry.data["account"], entry.data["password"])
+        self._command_locks: dict[str, asyncio.Lock] = {}
+
+    async def async_set_switch(self, did: str, on: bool) -> None:
+        """Optimistic command transaction (pattern from ha-aux-cloud): publish
+        the requested value immediately, roll back on failure, then let a
+        delayed authoritative poll reconcile (the cloud list can lag)."""
+        async with self._command_locks.setdefault(did, asyncio.Lock()):
+            st = (self.data or {}).get(did)
+            if st is None:
+                raise UpdateFailed("device no longer available")
+            prev = st.get("on")
+            if prev != on:
+                st["on"] = on
+                self.async_update_listeners()
+            try:
+                await asyncio.to_thread(
+                    self.client.set_switch, st["did_int"], st["device_pwd"], on)
+            except (SwitcherApiError, OSError, Exception) as err:  # noqa: BLE001
+                if (self.data or {}).get(did, {}).get("on") == on:
+                    self.data[did]["on"] = prev
+                    self.async_update_listeners()
+                if isinstance(err, SwitcherAuthError):
+                    raise ConfigEntryAuthFailed(str(err)) from err
+                raise HomeAssistantError(str(err)) from err
+            # authoritative reconcile shortly after (cloud WorkStatus lags)
+            self.config_entry.async_create_task(
+                self.hass, self._delayed_reconcile(), "switcher_cloud_reconcile")
+
+    async def _delayed_reconcile(self) -> None:
+        await asyncio.sleep(6)
+        await self.async_request_refresh()
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:

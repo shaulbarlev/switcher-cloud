@@ -142,10 +142,22 @@ def _parse_login_reply(body: bytes) -> dict:
 
 
 def parse_workstatus(b: bytes) -> dict:
-    if len(b) < 10:
+    """OgeSPlugS216Model.parseWorkStatus (decompiled, capture-verified):
+    wifiPower u8@0, switchState @1, power int32@9 (W = /220), voltage int32@13,
+    elect int32@17 (kWh = /3600000/1000), u16@21, lasttime int32@23,
+    opentime int32@27, isdelay u8@31."""
+    if len(b) < 32:
         return {}
-    secs_on = struct.unpack_from("<I", b, 8)[0]
-    return {"on": b[1] == 1, "secs_on": secs_on}
+    def u32(o):
+        return struct.unpack_from("<I", b, o)[0]
+    return {
+        "on": b[1] == 1,
+        "power_raw": u32(9),
+        "energy_kwh": round(u32(17) / 3_600_000 / 1000, 2),
+        "lasttime": u32(23),
+        "secs_on": u32(27),
+        "isdelay": b[31],
+    }
 
 
 # ---- client ---------------------------------------------------------------------

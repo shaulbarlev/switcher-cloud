@@ -64,14 +64,4 @@ class SwitcherCloudSwitch(CoordinatorEntity[SwitcherCloudCoordinator], SwitchEnt
         await self._set(False)
 
     async def _set(self, on: bool) -> None:
-        st = self.coordinator.data.get(self._did)
-        if not st or not st.get("device_pwd"):
-            raise HomeAssistantError("device password unavailable")
-        import asyncio
-        try:
-            await asyncio.to_thread(
-                self.coordinator.client.set_switch,
-                st["did_int"], st["device_pwd"], on)
-        except Exception as err:  # noqa: BLE001
-            raise HomeAssistantError(str(err)) from err
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_set_switch(self._did, on)
