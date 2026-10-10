@@ -57,7 +57,7 @@
         "name": "Energy"
       },
       "time_remaining": {
-        "name": "Auto off at"
+        "name": "Time remaining"
       },
       "power": {
         "name": "Power"
@@ -67,6 +67,9 @@
       },
       "temperature": {
         "name": "Temperature"
+      },
+      "time_on": {
+        "name": "Time on"
       }
     },
     "water_heater": {

@@ -16,13 +16,16 @@
         "default": "mdi:lightning-bolt"
       },
       "time_remaining": {
-        "default": "mdi:timer-off-outline"
+        "default": "mdi:timer-sand"
       },
       "power": {
         "default": "mdi:flash"
       },
       "auto_shutdown": {
         "default": "mdi:timer-off-outline"
+      },
+      "time_on": {
+        "default": "mdi:timer-outline"
       }
     },
     "water_heater": {

@@ -29,7 +29,7 @@ This is unofficial and not affiliated with Switcher.
 - Boilers (On Wall, V2, Touch, V4, Mini, Heater) get a water heater entity, a run timer and the auto shutdown setting.
 - Runner shutters get a cover with open, close, stop and set position, plus a child lock switch. Runner S11 and S12 also get their light lines.
 - Switcher Light SL01, SL02 and SL03 get one on/off light per line.
-- Power, current, energy and auto-off-time sensors, where the device reports them. Breeze gets a temperature sensor.
+- Power, current, energy, time on and time remaining sensors, where the device reports them. Breeze gets a temperature sensor.
 - Live updates. One connection to the cloud stays open, so a change made in the app shows up a few seconds later.
 
 ## Device support
@@ -100,12 +100,13 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `switch` | boilers, plugs, wall switches | Main on/off. One per gang on wall switches. |
 | `switch` "Child lock" | Runners, runner lines | The Runner's child lock, as in the app and `switcher_kis`. |
 | `water_heater` | boilers | Shows On / Off. No temperature, the cloud does not report one. |
-| `number` "Run timer" | boilers | Minutes, slider 0 to 180 in steps of 5. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. The device may clamp the value to its own maximum. |
+| `number` "Run timer" | boilers | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
 | `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. 0 means unlimited; values from 1 to 60 are raised to 61. The Heater reports this value but has no way to set it, so it gets a diagnostic sensor instead. |
 | `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
 | `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. The On Wall reports 0 here. |
-| `sensor` "Auto off at" | boilers | The moment the device will switch itself off, as a timestamp. Home Assistant shows it as a live countdown. Empty when the device is off. |
+| `sensor` "Time remaining" | boilers | Seconds until the device switches itself off. Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. 0 when off. |
+| `sensor` "Time on" | boilers | Seconds since the device switched on, from the device's own counter, ticking every second. 0 when off. |
 | `sensor` "Temperature" | Breeze | Room temperature from the Breeze's own sensor. |
 | `cover` | Runners, runner lines | Open / close / stop / position. Open and close are position 100 and 0, like `switcher_kis`. Device class shutter. |
 | `light` | Light SL01/02/03, S11/S12 light lines | On/off per line. |

@@ -4,7 +4,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -23,7 +23,7 @@ from homeassistant.const import (
 )
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.util import dt as dt_util
+from homeassistant.helpers.event import async_track_time_interval
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import ENERGY_FAMILIES, Family, next_seed
@@ -74,11 +74,22 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
     SwitcherSensorDescription(
         key="time_remaining",
         translation_key="time_remaining",
-        device_class=SensorDeviceClass.TIMESTAMP,
-        # Published as the moment the device will switch itself off; see
-        # SwitcherCloudCountdown for how the seed is chosen.
-        value_fn=lambda st: None,
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        # Seconds until the device switches itself off. Ticks down locally
+        # between polls; see SwitcherCloudTicker for how the seed is chosen.
+        value_fn=lambda st: (st.get("remaining") or 0) if st.get("on") else 0,
         present=lambda st: st.get("remaining") is not None,
+    ),
+    SwitcherSensorDescription(
+        key="time_on",
+        translation_key="time_on",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        # Seconds since the device switched on (device counter, i32@25 on the
+        # On Wall). Ticks up locally between polls. 0 while off, like the app.
+        value_fn=lambda st: (st.get("secs_on") or 0) if st.get("on") else 0,
+        present=lambda st: st.get("secs_on") is not None,
     ),
     SwitcherSensorDescription(
         # Heater (031F): the limit is reported in WorkStatus but neither the app
@@ -119,7 +130,7 @@ async def async_setup_entry(
         for desc in SENSORS:
             if not desc.present(st):
                 continue
-            cls = SwitcherCloudCountdown if desc.key == "time_remaining" else SwitcherCloudSensor
+            cls = SwitcherCloudTicker if desc.key in TICKING else SwitcherCloudSensor
             entities.append(cls(coordinator, did, desc))
     async_add_entities(entities)
 
@@ -141,62 +152,88 @@ class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
         return self.entity_description.value_fn(self._st())
 
 
-class SwitcherCloudCountdown(SwitcherCloudSensor):
-    """When the device will switch itself off, as a timestamp.
+TICKING = {"time_remaining": -1, "time_on": +1}   # key -> tick direction per second
 
-    The cloud only refreshes the device's remaining-seconds field now and
-    then, so polling it does not make a countdown. The app (yf/m1.java:348)
-    takes the device value as a seed and counts down locally. Here the seed
-    becomes a fixed "auto off at" timestamp: the frontend renders it as a live
-    countdown on its own, and the state only changes when the seed moves, so
-    the recorder is not written to every second.
+
+class SwitcherCloudTicker(SwitcherCloudSensor):
+    """A seconds value that keeps moving between polls.
+
+    The cloud only refreshes the device's timer fields now and then, and
+    often hands back a stale copy, so polling alone does not make a clock.
+    The app (yf/m1.java:348) takes the device value as a seed and moves it
+    locally, re-syncing only when a fresh value differs by more than 3 s.
+    Same here: "Time remaining" ticks down, "Time on" ticks up, one write per
+    second while the device is on, nothing while it is off.
     """
 
-    _attr_device_class = SensorDeviceClass.TIMESTAMP
-    _attr_state_class = None
-    _attr_native_unit_of_measurement = None
+    _attr_should_poll = False
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str,
                  desc: SwitcherSensorDescription) -> None:
         super().__init__(coordinator, did, desc)
-        self._seed: int | None = None          # seconds remaining at _seed_at
+        self._dir = TICKING[desc.key]
+        self._seed: int | None = None          # device value at _seed_at
         self._seed_at: float = 0.0             # monotonic
-        self._off_at: datetime | None = None   # wall clock, what we publish
         self._last_device: int | None = None
+        self._was_on = False
+        self._unsub_tick = None
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
         self._resync()
+        self._unsub_tick = async_track_time_interval(
+            self.hass, self._tick, timedelta(seconds=1))
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_tick:
+            self._unsub_tick()
+            self._unsub_tick = None
+        await super().async_will_remove_from_hass()
 
     def _local_value(self) -> int | None:
         if self._seed is None:
             return None
-        return max(0, self._seed - int(time.monotonic() - self._seed_at))
+        return max(0, self._seed + self._dir * int(time.monotonic() - self._seed_at))
 
     def _resync(self) -> None:
         st = self._st()
         on = bool(st.get("on"))
-        device = int(st.get("remaining") or 0) if on else 0
-        hint = self.coordinator.run_hint.get(self._did)
-        hint_newer = bool(hint and hint[1] > self._seed_at)
-        if hint_newer and on and hint:
-            # we just asked for a timed run; the cloud value may still be the
-            # previous run's, so seed from what we requested
-            device = max(device, hint[0] - int(time.monotonic() - hint[1]))
-        seed = next_seed(device, self._local_value(), on, self._last_device, hint_newer)
+        device = int(self.entity_description.value_fn(st) or 0)
+        local = self._local_value()
+        if self._dir < 0:
+            hint = self.coordinator.run_hint.get(self._did)
+            hint_newer = bool(hint and hint[1] > self._seed_at)
+            if hint_newer and on and hint:
+                # we just asked for a timed run; the cloud copy may still be
+                # the previous run's, so seed from what we requested
+                device = max(device, hint[0] - int(time.monotonic() - hint[1]))
+            seed = next_seed(device, local, on, self._last_device, hint_newer)
+        else:
+            # up-counter: a stale repeat is LOWER than the local clock, so a
+            # fresh value is one that moved ahead; also re-seed on off -> on
+            if not on:
+                seed = 0
+            elif local is None or not self._was_on or device > local + 3:
+                seed = device
+            else:
+                seed = None
         self._last_device = device
-        if seed is None:
-            return
-        self._seed, self._seed_at = seed, time.monotonic()
-        self._off_at = (dt_util.utcnow() + timedelta(seconds=seed)) if (on and seed > 0) else None
+        self._was_on = on
+        if seed is not None:
+            self._seed, self._seed_at = seed, time.monotonic()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         self._resync()
         super()._handle_coordinator_update()
 
+    @callback
+    def _tick(self, _now) -> None:
+        if self._was_on and self.available:
+            self.async_write_ha_state()
+
     @property
-    def native_value(self) -> datetime | None:
+    def native_value(self) -> float | int | None:
         if not self._st().get("on"):
-            return None
-        return self._off_at
+            return 0
+        return self._local_value()

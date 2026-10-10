@@ -20,7 +20,7 @@ from .entity import SwitcherCloudEntity
 
 PARALLEL_UPDATES = 0
 
-MAX_MINUTES = 180
+MAX_MINUTES = 90          # the app's timer picker stops at 90 minutes
 
 
 async def async_setup_entry(

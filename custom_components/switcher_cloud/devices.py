@@ -385,12 +385,14 @@ def parse_onwall(b: bytes) -> State:
     wifi u8@0, switch u8@1 (first of 8), power int32@9 (A = /220), voltage
     int32@13, elect int32@17, remaining u16@21 (seconds until auto-off; the
     device keeps the last value while off, so only meaningful when on),
-    isdelay u8@25 (timed run active)."""
+    time on i32@25 (seconds since switched on, counts up while on and holds
+    the last value while off; the app shows 00:00:00 then). The device does
+    not report an isdelay flag in this layout (always 0 at @31)."""
     if len(b) < 32:
         return State()
     return State(wifi=b[0], on=b[1] == 1, power_raw=_u32(b, 9),
                  energy_kwh=round(_u32(b, 17) / 3_600_000 / 1000, 3),
-                 remaining=_u16(b, 21), isdelay=b[25])
+                 remaining=_u16(b, 21), secs_on=_u32(b, 25))
 
 
 def parse_bath_heater(b: bytes) -> State:

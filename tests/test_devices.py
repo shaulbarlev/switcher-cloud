@@ -56,10 +56,10 @@ def test_onwall_parse_on_off():
 
 
 def test_onwall_remaining_from_live_bytes():
-    # sampled 20 s into a 180 s run: remaining u16@21 = 179, isdelay u8@25 = 1
+    # sampled right after a 180 s run started: remaining u16@21 = 179, time on i32@25 = 1
     b = bytes.fromhex("0201000000000000006e0a00000000000000000000b300000001000000000000")
     st = devices.parse_onwall(b)
-    assert st.on and st.remaining == 179 and st.isdelay == 1 and st.power_raw == 2670
+    assert st.on and st.remaining == 179 and st.secs_on == 1 and st.power_raw == 2670
 
 
 def test_classify():
@@ -155,6 +155,15 @@ def test_auto_shutdown_read_and_push_payload():
     vals = devices.parse_params_payload(bytes.fromhex("0100140c0400c0120000"))  # captured push
     assert struct.unpack("<i", vals[devices.PARAM_AUTO_SHUTDOWN])[0] == 4800
     assert devices.parse_params_payload(bytes.fromhex("0100140c04")) == {}   # truncated
+
+
+def test_onwall_time_on_and_remaining_live_bytes():
+    # sampled live 2026-10-10 during a 180 s timed run, then after turning off
+    head = bytes.fromhex("0201000000000000" + "00" + "430a0000" + "00000000" + "00000000")
+    during = devices.parse_onwall(head + bytes.fromhex("b400000050010000000000"))
+    assert (during.remaining, during.secs_on) == (180, 336)
+    off = devices.parse_onwall(bytes.fromhex("0100000000000000" + "00" * 13) + bytes.fromhex("000000008d010000000000"))
+    assert (off.on, off.remaining, off.secs_on) == (False, 0, 397)
 
 
 def test_next_seed_rules():
