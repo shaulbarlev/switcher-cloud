@@ -1,4 +1,4 @@
-"""Sensor platform: power, current, energy, time remaining (and Breeze temperature) from WorkStatus."""
+"""Sensor platform: power, current, energy, remaining time, time on (and Breeze temperature) from WorkStatus."""
 from __future__ import annotations
 
 import time
@@ -27,7 +27,7 @@ from homeassistant.helpers.event import async_track_time_interval
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import ENERGY_FAMILIES, Family, next_seed
-from .entity import SwitcherCloudEntity
+from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -78,8 +78,9 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfTime.SECONDS,
         # Seconds until the device switches itself off. Ticks down locally
         # between polls; see SwitcherCloudTicker for how the seed is chosen.
+        # Shown as "Remaining time", the switcher_kis name for the same quantity.
         value_fn=lambda st: (st.get("remaining") or 0) if st.get("on") else 0,
-        present=lambda st: st.get("remaining") is not None,
+        present=lambda st: st.get("timed") and st.get("remaining") is not None,
     ),
     SwitcherSensorDescription(
         key="time_on",
@@ -89,11 +90,12 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         # Seconds since the device switched on (device counter, i32@25 on the
         # On Wall). Ticks up locally between polls. 0 while off, like the app.
         value_fn=lambda st: (st.get("secs_on") or 0) if st.get("on") else 0,
-        present=lambda st: st.get("secs_on") is not None,
+        present=lambda st: st.get("timed") and st.get("secs_on") is not None,
     ),
     SwitcherSensorDescription(
-        # Heater (031F): the limit is reported in WorkStatus but neither the app
-        # nor aioswitcher has a write path for it, so it is a read-only sensor.
+        # Heater (031F): the limit is reported in WorkStatus. The app has no write
+        # path; switcher_kis sends the type-1 set_auto_off packet, unverified on a
+        # Heater, so here it stays a read-only sensor.
         key="auto_shutdown",
         translation_key="auto_shutdown",
         device_class=SensorDeviceClass.DURATION,
@@ -123,16 +125,16 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[SensorEntity] = []
-    for did, st in coordinator.data.items():
+
+    def factory(did: str, st: dict[str, Any]) -> list[SensorEntity]:
         if Family(st.get("family", "unknown")) not in ENERGY_FAMILIES | {Family.AIRCON}:
-            continue
-        for desc in SENSORS:
-            if not desc.present(st):
-                continue
-            cls = SwitcherCloudTicker if desc.key in TICKING else SwitcherCloudSensor
-            entities.append(cls(coordinator, did, desc))
-    async_add_entities(entities)
+            return []
+        return [
+            (SwitcherCloudTicker if desc.key in TICKING else SwitcherCloudSensor)(coordinator, did, desc)
+            for desc in SENSORS if desc.present(st)
+        ]
+
+    async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
 class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
@@ -162,7 +164,7 @@ class SwitcherCloudTicker(SwitcherCloudSensor):
     often hands back a stale copy, so polling alone does not make a clock.
     The app (yf/m1.java:348) takes the device value as a seed and moves it
     locally, re-syncing only when a fresh value differs by more than 3 s.
-    Same here: "Time remaining" ticks down, "Time on" ticks up, one write per
+    Same here: "Remaining time" ticks down, "Time on" ticks up, one write per
     second while the device is on, nothing while it is off.
     """
 

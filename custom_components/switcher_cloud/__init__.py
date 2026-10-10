@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import logging
 
-from homeassistant.core import HomeAssistant
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import device_registry as dr
 
 from .const import DOMAIN, PLATFORMS
@@ -18,6 +19,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: SwitcherCloudConfigEntry
     # on_unload callbacks in both cases, so a failed setup can't leak a
     # reconnect loop.
     entry.async_on_unload(coordinator.stop_realtime)
+
+    @callback
+    def _on_hass_stop(_: Event) -> None:
+        coordinator.stop_realtime()
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _on_hass_stop))
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

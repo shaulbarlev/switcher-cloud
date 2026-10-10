@@ -17,7 +17,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import Family, body_curtain_action, body_curtain_position
-from .entity import SwitcherCloudEntity
+from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -30,12 +30,14 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        SwitcherCloudCover(coordinator, did)
-        for did, st in coordinator.data.items()
-        if Family(st.get("family", "unknown")) is Family.CURTAIN
-        or (Family(st.get("family", "unknown")) is Family.MIX and st.get("line_type") == 12)
-    )
+
+    def factory(did: str, st: dict[str, Any]) -> list[CoverEntity]:
+        fam = Family(st.get("family", "unknown"))
+        if fam is Family.CURTAIN or (fam is Family.MIX and st.get("line_type") == 12):
+            return [SwitcherCloudCover(coordinator, did)]
+        return []
+
+    async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
 class SwitcherCloudCover(SwitcherCloudEntity, CoverEntity):
@@ -44,11 +46,12 @@ class SwitcherCloudCover(SwitcherCloudEntity, CoverEntity):
         CoverEntityFeature.OPEN | CoverEntityFeature.CLOSE
         | CoverEntityFeature.STOP | CoverEntityFeature.SET_POSITION
     )
-    _attr_name = None
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator, did)
         self._attr_unique_id = f"switcher_cloud_{did}_cover"
+        if not self._st().get("line_no"):
+            self._attr_name = None      # main entity: takes the device name; mix lines keep "Line n"
 
     @property
     def is_closed(self) -> bool | None:

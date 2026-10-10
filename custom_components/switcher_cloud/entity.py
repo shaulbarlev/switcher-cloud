@@ -1,14 +1,44 @@
 """Shared entity base for Switcher Cloud."""
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from typing import Any
 
+from homeassistant.core import callback
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo, format_mac
+from homeassistant.helpers.entity import Entity
+from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SwitcherCloudCoordinator
+from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import MODEL_NAMES, VERIFIED, Family
+
+
+@callback
+def async_add_new_devices(
+    coordinator: SwitcherCloudCoordinator,
+    entry: SwitcherCloudConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
+    factory: Callable[[str, dict[str, Any]], Iterable[Entity]],
+) -> None:
+    """Add entities for every device now and for devices that join the
+    account later: `factory(did, state)` runs once per coordinator key."""
+    known: set[str] = set()
+
+    @callback
+    def _add_new() -> None:
+        new: list[Entity] = []
+        for did, st in (coordinator.data or {}).items():
+            if did in known:
+                continue
+            known.add(did)
+            new.extend(factory(did, st))
+        if new:
+            async_add_entities(new)
+
+    _add_new()
+    entry.async_on_unload(coordinator.async_add_listener(_add_new))
 
 
 class SwitcherCloudEntity(CoordinatorEntity[SwitcherCloudCoordinator]):

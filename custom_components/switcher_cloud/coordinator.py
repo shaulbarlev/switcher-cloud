@@ -2,20 +2,27 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import Callable
 from datetime import timedelta
-from typing import Any
+from typing import Any, NoReturn
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
+from homeassistant.exceptions import (
+    ConfigEntryAuthFailed,
+    HomeAssistantError,
+    ServiceValidationError,
+)
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
 from .const import CONF_ACCOUNT, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .devices import (
     Family,
+    auto_shutdown_valid,
     body_auto_shutdown,
     body_bath_heater,
     body_light_toggle,
@@ -28,7 +35,7 @@ from .devices import (
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIRM_INTERVAL = 0.5     # s between confirm polls after a command
+CONFIRM_INTERVAL = 2.0     # s to wait for a push before each confirm poll after a command
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
 ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
                            # re-syncs the countdown seed (the cloud updates it rarely)
@@ -54,6 +61,8 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
         self.client = SwitcherClient(entry.data[CONF_ACCOUNT], entry.data[CONF_PASSWORD])
         self._command_locks: dict[str, asyncio.Lock] = {}
+        # did -> event set by any 0x0103 push while a confirm loop waits on it
+        self._push_events: dict[str, asyncio.Event] = {}
         # did -> (seconds, monotonic time) of the last timed run we requested;
         # the countdown sensor seeds from it so an extended run is not clipped
         # by a stale cloud value.
@@ -91,6 +100,10 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
     def _handle_push(self, push: dict) -> None:
         """0x0103 push from the server (device ack / status relay)."""
         _LOGGER.debug("push: %s", push)
+        # the push body carries no DID, so wake every waiting confirm loop;
+        # each one polls and checks its own device
+        for ev in self._push_events.values():
+            ev.set()
         self._schedule_push_debounced_refresh()
 
     @callback
@@ -107,6 +120,14 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         await self.async_request_refresh()
 
     # -- commands (confirmed, non-optimistic) ------------------------------------
+    def _raise_command_error(self, err: Exception) -> NoReturn:
+        if isinstance(err, SwitcherAuthError):
+            self.config_entry.async_start_reauth(self.hass)
+            raise HomeAssistantError(translation_domain=DOMAIN,
+                                     translation_key="invalid_auth") from err
+        raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed",
+                                 translation_placeholders={"error": str(err)}) from err
+
     async def async_set_switch(self, did: str, on: bool, gang: int | None = None,
                                run_seconds: int = 0) -> None:
         """Send on/off for the device's family, then poll until the device
@@ -162,7 +183,11 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             if st is None:
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="device_unavailable")
             pwd_plain = st.get("device_pwd") or ""
-            if Family(st.get("family", "unknown")) is Family.PLUG:
+            fam = Family(st.get("family", "unknown"))
+            if not auto_shutdown_valid(fam, seconds):
+                raise ServiceValidationError(translation_domain=DOMAIN,
+                                             translation_key="auto_off_range")
+            if fam is Family.PLUG:
                 body = body_plug_auto_shutdown(st["did_int"], self.client.uid, pwd_plain, seconds)
                 job, args = self.client.send_control_single, (st["did_int"], body)
             else:
@@ -171,13 +196,11 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 job, args = self.client.send_write_params, (body,)
             try:
                 await self.hass.async_add_executor_job(job, *args)
-            except SwitcherAuthError as err:
-                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="invalid_auth") from err
-            except Exception as err:  # noqa: BLE001
-                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed",
-                                         translation_placeholders={"error": str(err)}) from err
+            except (SwitcherApiError, OSError, TimeoutError) as err:
+                self._raise_command_error(err)
 
-    async def async_control(self, did: str, body: bytes, done=None) -> None:
+    async def async_control(self, did: str, body: bytes,
+                            done: Callable[[dict[str, Any]], bool] | None = None) -> None:
         """Generic control (covers, lights): send + confirm via `done(state)`."""
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             await self._send_and_confirm(did, body, done)
@@ -189,29 +212,31 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             return g[gang] if gang < len(g) else None
         return st.get("on")
 
-    async def _send_and_confirm(self, did: str, body: bytes, done,
+    async def _send_and_confirm(self, did: str, body: bytes,
+                                done: Callable[[dict[str, Any]], bool] | None,
                                 single_did: int | None = None) -> None:
+        event = self._push_events.setdefault(did, asyncio.Event())
+        event.clear()
         try:
             if single_did is not None:
                 await self.hass.async_add_executor_job(
                     self.client.send_control_single, single_did, body)
             else:
                 await self.hass.async_add_executor_job(self.client.send_control, body)
-        except SwitcherAuthError as err:
-            # a service call can't trigger reauth itself; the next poll will.
-            raise HomeAssistantError(translation_domain=DOMAIN,
-                                     translation_key="invalid_auth") from err
-        except Exception as err:  # noqa: BLE001
-            raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed",
-                                     translation_placeholders={"error": str(err)}) from err
+        except (SwitcherApiError, OSError, TimeoutError) as err:
+            self._raise_command_error(err)
         # Confirm with a private fetch (does not touch last_update_success or
         # the scheduled poll), publishing once when the requested state shows.
+        # The device ack arrives as a 0x0103 push, so wait for that and fall
+        # back to a poll every CONFIRM_INTERVAL if it does not come.
         deadline = self.hass.loop.time() + CONFIRM_TIMEOUT
         while self.hass.loop.time() < deadline:
-            await asyncio.sleep(CONFIRM_INTERVAL)
+            with contextlib.suppress(TimeoutError):
+                await asyncio.wait_for(event.wait(), CONFIRM_INTERVAL)
+            event.clear()
             try:
                 data = await self.hass.async_add_executor_job(self.client.poll)
-            except Exception as err:  # noqa: BLE001 - transient; keep trying
+            except (SwitcherApiError, OSError, TimeoutError) as err:  # transient; keep trying
                 _LOGGER.debug("confirm poll failed: %s", err)
                 continue
             self._apply_scan_interval(data)
@@ -222,7 +247,7 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
     # -- scheduled poll ------------------------------------------------------------
     @callback
     def _apply_scan_interval(self, data: dict[str, dict[str, Any]]) -> None:
-        active = any(st.get("on") and st.get("boiler") for st in data.values())
+        active = any(st.get("on") and st.get("timed") for st in data.values())
         self.update_interval = timedelta(
             seconds=ACTIVE_SCAN_INTERVAL if active else DEFAULT_SCAN_INTERVAL)
 

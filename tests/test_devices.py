@@ -196,16 +196,21 @@ def test_dispatch_routes_param_push_to_waiter_not_push_callback():
 # aioswitcher's LAN control body is DID|uid|pwd[32]|sub|len|args, the same as the
 # cloud 0x0201 body, so its packet templates pin our sub-op tails byte for byte.
 # The "37" that precedes each sub-op in api/packets.py is the last pwd byte.
+# Caveat for the token (S11/S12) forms: aioswitcher's GENERAL_TOKEN_COMMAND
+# always writes length 0600 and pads the arguments to 6 bytes, whatever the
+# real argument count. Ours carry the app's lengths (02 0300 for a 3 byte stop,
+# 01 0200 for a 2 byte set-position). Sub-op and leading argument bytes match
+# aioswitcher; the length field and padding do not.
 
 def test_runner_tails_match_aioswitcher_packets():
     pwd = b"\x00" * 32
     # RUNNER_SET_POSITION: "3701" + "0100" + pos      (Runner / Runner Mini)
     assert devices.body_curtain_position(1, 2, pwd, 0x32)[40:] == bytes.fromhex("01010032")
-    # GENERAL_TOKEN_COMMAND set_position: "3701" .. "0{index}{pos}" (S11 line 3)
+    # token set_position: "3701" + "0600" + "0{index}{pos}" + pad; ours is len 2, no pad (S11 line 3)
     assert devices.body_curtain_position(1, 2, pwd, 100, line_no=3)[40:] == bytes.fromhex("0102000364")
     # RUNNER_STOP_COMMAND: "370202000000"
     assert devices.body_curtain_action(1, 2, pwd, 0)[40:] == bytes.fromhex("0202000000")
-    # token stop_shutter: "3702" .. "0{index}0000" (S12 line 2)
+    # token stop_shutter: "3702" + "0600" + "0{index}0000" + pad; ours is len 3, no pad (S12 line 2)
     assert devices.body_curtain_action(1, 2, pwd, 0, line_no=2)[40:] == bytes.fromhex("020300020000")
     # RUNNER_SET_CHILD_LOCK: "3707" + "0100" + 01
     assert devices.body_curtain_lock(1, 2, pwd, True)[40:] == bytes.fromhex("07010001")
@@ -272,7 +277,19 @@ def test_breeze_workstatus_matches_aioswitcher_thermostat_parser():
 def test_product_table_and_boilers():
     assert devices.classify("030B")[0] is devices.Family.PLUG          # Touch speaks OgeSPlugModel
     assert devices.product_name("030b", devices.Family.PLUG) == "Touch"
-    assert devices.is_boiler("030F") and devices.is_boiler("0321") and not devices.is_boiler("01A8")
+    assert devices.is_water_heater("030F") and devices.is_water_heater("0321")
+    assert not devices.is_water_heater("01A8") and not devices.is_water_heater("031F")
+    assert devices.is_timed("031F") and devices.is_timed("0321") and not devices.is_timed("01A8")
+    assert devices.TIMED_TYPES == devices.WATER_HEATER_TYPES | {"031F"}
+
+
+def test_auto_shutdown_range_by_family():
+    ok, F = devices.auto_shutdown_valid, devices.Family
+    # PLUG (V2/Touch/V4/Mini): the 1 h .. 23:59 window aioswitcher enforces, inclusive
+    assert ok(F.PLUG, 3600) and ok(F.PLUG, 86340) and ok(F.PLUG, 7200)
+    assert not ok(F.PLUG, 0) and not ok(F.PLUG, 3599) and not ok(F.PLUG, 86341) and not ok(F.PLUG, 86400)
+    # ON_WALL: 0 = unlimited and short values are clamped by body_auto_shutdown, never rejected
+    assert ok(F.ON_WALL, 0) and ok(F.ON_WALL, 600) and ok(F.ON_WALL, 86400)
     assert devices.classify("0F02")[0] is devices.Family.MIX           # Runner S12
     assert devices.product_name("0F06", devices.Family.MIX) == "Light SL03"
     assert devices.classify("0E01")[0] is devices.Family.AIRCON

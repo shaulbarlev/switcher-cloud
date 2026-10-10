@@ -7,6 +7,10 @@
         "data": {
           "email": "Email",
           "password": "Password"
+        },
+        "data_description": {
+          "email": "The email address used to sign in to the Switcher app.",
+          "password": "The password of that account."
         }
       },
       "reauth_confirm": {
@@ -14,6 +18,9 @@
         "description": "Enter the new password for {email}.",
         "data": {
           "password": "Password"
+        },
+        "data_description": {
+          "password": "The new password of the Switcher app account."
         }
       }
     },
@@ -57,7 +64,7 @@
         "name": "Energy"
       },
       "time_remaining": {
-        "name": "Time remaining"
+        "name": "Remaining time"
       },
       "power": {
         "name": "Power"
@@ -107,6 +114,37 @@
     },
     "invalid_auth": {
       "message": "The Switcher cloud rejected the saved password. Re-authenticate the integration."
+    },
+    "auto_off_range": {
+      "message": "Auto shutdown for this boiler must be between 1 hour and 23 hours 59 minutes."
+    },
+    "not_timed": {
+      "message": "This device has no run timer. Only boilers can be turned on with a timer."
+    },
+    "no_auto_off": {
+      "message": "This device has no auto shutdown setting that can be written."
+    }
+  },
+  "services": {
+    "set_auto_off": {
+      "name": "Set auto-off",
+      "description": "Updates Switcher device auto-off setting.",
+      "fields": {
+        "auto_off": {
+          "name": "Auto-off",
+          "description": "Time period string containing hours and minutes."
+        }
+      }
+    },
+    "turn_on_with_timer": {
+      "name": "Turn on with timer",
+      "description": "Turns on the Switcher device with timer.",
+      "fields": {
+        "timer_minutes": {
+          "name": "Timer",
+          "description": "Duration to turn on the Switcher."
+        }
+      }
     }
   }
 }

@@ -27,7 +27,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import LIGHT_EFFECTS, Family, body_light_color, body_light_toggle, rgbwt_bytes
-from .entity import SwitcherCloudEntity
+from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -43,14 +43,16 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[LightEntity] = []
-    for did, st in coordinator.data.items():
+
+    def factory(did: str, st: dict[str, Any]) -> list[LightEntity]:
         fam = Family(st.get("family", "unknown"))
         if fam is Family.LIGHT:
-            entities.append(SwitcherCloudLight(coordinator, did))
-        elif fam is Family.MIX and st.get("line_type") != 12:
-            entities.append(SwitcherCloudMixLight(coordinator, did))
-    async_add_entities(entities)
+            return [SwitcherCloudLight(coordinator, did)]
+        if fam is Family.MIX and st.get("line_type") != 12:
+            return [SwitcherCloudMixLight(coordinator, did)]
+        return []
+
+    async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
 class SwitcherCloudMixLight(SwitcherCloudEntity, LightEntity):

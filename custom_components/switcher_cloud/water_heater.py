@@ -1,5 +1,7 @@
-"""Water heater platform for boilers: On Wall, Heater, and the V2/Touch/V4/Mini
-(aioswitcher DeviceCategory.WATER_HEATER). On/off only, the cloud has no temperature."""
+"""Water heater platform for boilers: On Wall and the V2/Touch/V4/Mini
+(aioswitcher DeviceCategory.WATER_HEATER). The Heater (031F) is a separate
+category there and a plain switch in switcher_kis, so it gets none.
+On/off only, the cloud has no temperature."""
 from __future__ import annotations
 
 from typing import Any
@@ -14,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
-from .entity import SwitcherCloudEntity
+from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -25,11 +27,9 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        SwitcherCloudWaterHeater(coordinator, did)
-        for did, st in coordinator.data.items()
-        if st.get("boiler")
-    )
+    async_add_new_devices(
+        coordinator, entry, async_add_entities,
+        lambda did, st: [SwitcherCloudWaterHeater(coordinator, did)] if st.get("boiler") else [])
 
 
 class SwitcherCloudWaterHeater(SwitcherCloudEntity, WaterHeaterEntity):

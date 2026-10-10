@@ -41,5 +41,13 @@
         "default": "mdi:lock-open"
       }
     }
+  },
+  "services": {
+    "set_auto_off": {
+      "service": "mdi:progress-clock"
+    },
+    "turn_on_with_timer": {
+      "service": "mdi:timer"
+    }
   }
 }

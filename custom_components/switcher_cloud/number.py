@@ -9,6 +9,8 @@ run length until the device turns off.
 """
 from __future__ import annotations
 
+from typing import Any
+
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory, UnitOfTime
 from homeassistant.core import HomeAssistant, callback
@@ -16,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import AUTO_SHUTDOWN_WRITABLE, Family
-from .entity import SwitcherCloudEntity
+from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -29,14 +31,16 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    entities: list[NumberEntity] = []
-    for did, st in coordinator.data.items():
-        if not st.get("boiler"):
-            continue
-        entities.append(SwitcherCloudRunTimer(coordinator, did))
+
+    def factory(did: str, st: dict[str, Any]) -> list[NumberEntity]:
+        if not st.get("timed"):
+            return []
+        entities: list[NumberEntity] = [SwitcherCloudRunTimer(coordinator, did)]
         if Family(st.get("family", "unknown")) in AUTO_SHUTDOWN_WRITABLE:
             entities.append(SwitcherCloudAutoShutdown(coordinator, did))
-    async_add_entities(entities)
+        return entities
+
+    async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
 class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
@@ -54,8 +58,9 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        # The device doesn't report its remaining countdown in WorkStatus; once
-        # it turns itself off the requested run length is spent → show 0.
+        # The device's own countdown is the "Remaining time" sensor; this number
+        # only remembers what was asked for, so once the device turns itself
+        # off the request is spent and it goes back to 0.
         if self._requested and not self._st().get("on"):
             self._requested = 0
         super()._handle_coordinator_update()
@@ -83,14 +88,15 @@ class SwitcherCloudAutoShutdown(SwitcherCloudEntity, NumberEntity):
     with 0x0E01. Capture-verified 2026-10-10. V2/Touch/V4/Mini: read from
     WorkStatus (autoclosing i32 @22), written with sub 0x04, the same packet
     aioswitcher's set_auto_shutdown sends over the LAN.
-    In minutes; 0 = unlimited. Anything from 1 to 60 minutes is raised to 61
-    by the S216 (matching the app); aioswitcher allows 1 to 24 h.
+    In minutes. S216: 0 = unlimited, 1 to 60 is raised to 61 by the device
+    (body_auto_shutdown, matching the app). V2/Touch/V4/Mini: 60 to 1439 only,
+    the range aioswitcher sends; anything else is rejected before the write.
     """
 
     _attr_translation_key = "auto_shutdown"
     _attr_mode = NumberMode.BOX
     _attr_native_min_value = 0
-    _attr_native_max_value = 24 * 60
+    _attr_native_max_value = 24 * 60 - 1
     _attr_native_step = 1
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
     _attr_entity_category = EntityCategory.CONFIG
@@ -105,8 +111,5 @@ class SwitcherCloudAutoShutdown(SwitcherCloudEntity, NumberEntity):
         return None if s is None else round(s / 60)
 
     async def async_set_native_value(self, value: float) -> None:
-        minutes = int(value)
-        if 0 < minutes < 61:
-            minutes = 61          # device minimum, same as the app
-        await self.coordinator.async_set_auto_shutdown(self._did, minutes * 60)
+        await self.coordinator.async_set_auto_shutdown(self._did, int(value) * 60)
         await self.coordinator.async_request_refresh()

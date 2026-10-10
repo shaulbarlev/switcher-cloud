@@ -465,7 +465,7 @@ class SwitcherClient:
                         _LOGGER.debug("auto-shutdown read failed: %s", err)
                         if cached:                      # carry the last good value
                             st["auto_shutdown_s"] = cached[0]
-            elif st.get("boiler") and st.get("autoclosing") is not None:
+            elif st.get("timed") and st.get("autoclosing") is not None:
                 st["auto_shutdown_s"] = st["autoclosing"]
             out[self.state_key(dev)] = st
         return out
@@ -543,7 +543,7 @@ class SwitcherClient:
 
     @staticmethod
     def device_state(device: dict[str, Any]) -> dict:
-        from .devices import PARSERS, classify, is_boiler, product_name
+        from .devices import PARSERS, classify, is_timed, is_water_heater, product_name
         fam, main, sub = classify(str(device.get("DeviceType", "")))
         line_no = int(device.get("LineNo") or 0)
         line_type = int(device.get("LineType") or 0)
@@ -564,6 +564,7 @@ class SwitcherClient:
         st["firmware"] = device.get("FirmwareVersion")
         st["product_features"] = device.get("ProductFeatures")
         st["model"] = product_name(st["device_type"], fam)
-        st["boiler"] = is_boiler(st["device_type"])
+        st["boiler"] = is_water_heater(st["device_type"])   # water_heater entity
+        st["timed"] = is_timed(st["device_type"])           # run timer, time sensors
         st["workstatus_hex"] = ws.hex()
         return st

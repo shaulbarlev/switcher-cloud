@@ -61,18 +61,41 @@ PRODUCTS = {
     "0F08": "Light SL02 Mini",
     "0F06": "Light SL03",
 }
-# aioswitcher DeviceCategory.WATER_HEATER plus the app's two boiler models:
-# these get water_heater, run timer and auto-shutdown entities. 01A8 (Power
-# Plug) speaks the same OgeSPlugModel protocol but is a plain outlet.
-BOILER_TYPES = {"0321", "031F", "030B", "030F", "0317", "01A1", "01A7"}
+# aioswitcher DeviceCategory.WATER_HEATER plus the On Wall: these get a
+# water_heater entity. The Heater (031F) is aioswitcher's separate HEATER
+# category and switcher_kis gives it a plain switch, so it is not in here.
+WATER_HEATER_TYPES = {"0321", "030B", "030F", "0317", "01A1", "01A7"}
+# Everything with a run timer and the time remaining / time on counters: the
+# water heaters plus the Heater. 01A8 (Power Plug) speaks the same
+# OgeSPlugModel protocol but is a plain outlet.
+TIMED_TYPES = WATER_HEATER_TYPES | {"031F"}
+
+# V2/Touch/V4/Mini accept an auto shutdown of 1 h to 23:59 only; aioswitcher's
+# timedelta_to_hexadecimal_seconds raises outside 3600..86340 and nothing
+# else ever gets sent to them, so 0 (unlimited) is untested on that hardware.
+PLUG_AUTO_SHUTDOWN_RANGE = (3600, 86340)
 
 
 def product_name(device_type: str, family: Family) -> str:
     return PRODUCTS.get(device_type.upper(), MODEL_NAMES.get(family, "Unknown device"))
 
 
-def is_boiler(device_type: str) -> bool:
-    return device_type.upper() in BOILER_TYPES
+def is_water_heater(device_type: str) -> bool:
+    return device_type.upper() in WATER_HEATER_TYPES
+
+
+def is_timed(device_type: str) -> bool:
+    return device_type.upper() in TIMED_TYPES
+
+
+def auto_shutdown_valid(family: Family, seconds: int) -> bool:
+    """Range check before an auto shutdown write. PLUG: 1 h to 23:59 (see
+    PLUG_AUTO_SHUTDOWN_RANGE). ON_WALL: anything; body_auto_shutdown applies
+    the device's own rule (0 = unlimited, else at least 3660 s)."""
+    if family is Family.PLUG:
+        lo, hi = PLUG_AUTO_SHUTDOWN_RANGE
+        return lo <= seconds <= hi
+    return True
 
 
 def classify(device_type: str) -> tuple[Family, int, int]:
@@ -116,7 +139,7 @@ def _head(did: int, uid: int, pwd_block: bytes, sub: int, length: int) -> bytear
     return b
 
 
-def body_onwall(did, uid, pwd_block, on: bool, isdelay: int = 0) -> bytes:
+def body_onwall(did: int, uid: int, pwd_block: bytes, on: bool, isdelay: int = 0) -> bytes:
     """ei/b.w(): sub 0x23 len 5: state u8, isdelay u32. (48 B) Verified on hardware.
     isdelay is a number of seconds for a timed run (app UI a1/e2.java:437-456,
     10 s steps, at most autoclosingtime). 0 means a plain on/off."""
@@ -125,14 +148,14 @@ def body_onwall(did, uid, pwd_block, on: bool, isdelay: int = 0) -> bytes:
     return bytes(b)
 
 
-def body_bath_heater(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
+def body_bath_heater(did: int, uid: int, pwd_block: bytes, on: bool, delay: int = 0) -> bytes:
     """OgeBathHeaterModel.getControlCMD: sub 0x23 len 5: state u8, delayTime u32 (seconds). (48 B)"""
     b = _head(did, uid, pwd_block, 0x23, 5)
     b += bytes([1 if on else 0]) + struct.pack("<I", delay)
     return bytes(b)
 
 
-def body_plug(did, uid, pwd_block, on: bool, line_no: int = 0, line_type: int = 0,
+def body_plug(did: int, uid: int, pwd_block: bytes, on: bool, line_no: int = 0, line_type: int = 0,
               isdelay: int = 0, autoclosing: int = 0) -> bytes:
     """OgeSPlugModel.getControlCMD cloud forms (OgeSPlugModel.java:111-143):
        lineNo != 0 : sub 0x0A len 6: lineNo u8,   state u8, isdelay u32      (49 B)
@@ -149,7 +172,7 @@ def body_plug(did, uid, pwd_block, on: bool, line_no: int = 0, line_type: int = 
     return bytes(b)
 
 
-def body_plug_single(did, uid, pwd_plain: str, on: bool, isdelay: int = 0) -> bytes:
+def body_plug_single(did: int, uid: int, pwd_plain: str, on: bool, isdelay: int = 0) -> bytes:
     """OgeSPlugModel.getControlCMD lineNo==0 && lineType==0 (OgeSPlugModel.java:145-173),
     identical in OgeSocketModel: 49 B plaintext body = DID u32, uid u32, pwd l(32)
     (not the native AES block), sub 0x01, len u16 6, state u16, isdelay u32.
@@ -165,7 +188,7 @@ def body_plug_single(did, uid, pwd_plain: str, on: bool, isdelay: int = 0) -> by
 
 
 
-def body_plug_auto_shutdown(did, uid, pwd_plain: str, seconds: int) -> bytes:
+def body_plug_auto_shutdown(did: int, uid: int, pwd_plain: str, seconds: int) -> bytes:
     """OgeSPlugModel.getAutoTimeCMD lineNo==0 (OgeSPlugModel.java:60-98): 47 B
     plaintext body = DID u32, uid u32, pwd l(32), sub 0x04, len 4, seconds u32.
     Same wrapping as body_plug_single (send via send_control_single).
@@ -178,14 +201,14 @@ def body_plug_auto_shutdown(did, uid, pwd_plain: str, seconds: int) -> bytes:
     return b
 
 
-def body_switch(did, uid, pwd_block, index: int, on: bool) -> bytes:
+def body_switch(did: int, uid: int, pwd_block: bytes, index: int, on: bool) -> bytes:
     """ei/b.v(): sub 0x01 len 2: index u8 (0 = all gangs, 1..7 = gang), state u8. (45 B)"""
     b = _head(did, uid, pwd_block, 0x01, 2)
     b += bytes([index & 0xFF, 1 if on else 0])
     return bytes(b)
 
 
-def body_curtain_action(did, uid, pwd_block, action: int, line_no: int = 0,
+def body_curtain_action(did: int, uid: int, pwd_block: bytes, action: int, line_no: int = 0,
                         moving: bool = False) -> bytes:
     """OgeCurtainModel.getMunualControlCMD: sub 0x02 len 2|3: [lineNo] u8, moving u8, action u8.
        action: 0 = stop, 1 = up/open, 2 = down/close (ACTION_MANUAL_UP/DOWN).
@@ -200,7 +223,7 @@ def body_curtain_action(did, uid, pwd_block, action: int, line_no: int = 0,
     return bytes(b)
 
 
-def body_curtain_position(did, uid, pwd_block, open_ratio: int, line_no: int = 0) -> bytes:
+def body_curtain_position(did: int, uid: int, pwd_block: bytes, open_ratio: int, line_no: int = 0) -> bytes:
     """OgeCurtainModel.getControlCMD: sub 0x01 len 1|2: [lineNo] u8, openRatio u8 (0-100).
     aioswitcher set_position: RUNNER_SET_POSITION tail `01 0100 <pos>` and
     GENERAL_TOKEN_COMMAND `01 .. 0{line}<pos>`; 0 = closed, 100 = open."""
@@ -212,7 +235,7 @@ def body_curtain_position(did, uid, pwd_block, open_ratio: int, line_no: int = 0
     return bytes(b)
 
 
-def body_curtain_lock(did, uid, pwd_block, locked: bool, line_no: int = 0) -> bytes:
+def body_curtain_lock(did: int, uid: int, pwd_block: bytes, locked: bool, line_no: int = 0) -> bytes:
     """OgeCurtainModel.getControlLockCMD: sub 0x07 len 1|2: [lineNo] u8, lock u8.
     aioswitcher set_shutter_child_lock: RUNNER_SET_CHILD_LOCK tail `07 0100 <01|00>`."""
     length = 2 if line_no else 1
@@ -223,7 +246,7 @@ def body_curtain_lock(did, uid, pwd_block, locked: bool, line_no: int = 0) -> by
     return bytes(b)
 
 
-def body_light_toggle(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
+def body_light_toggle(did: int, uid: int, pwd_block: bytes, on: bool, delay: int = 0) -> bytes:
     """OgeLightModel sub 0x08 len 3: state u8 (1 = on, 2 = off; note off is 2, not 0), delay u16. (46 B)"""
     b = _head(did, uid, pwd_block, 0x08, 3)
     b += bytes([1 if on else 2]) + struct.pack("<H", delay & 0xFFFF)
@@ -257,7 +280,7 @@ PARAM_AUTO_SHUTDOWN = 0x0C14     # 3092: S216 auto-shutdown limit in seconds (ag
 AUTO_SHUTDOWN_MIN = 3660         # app clamps 1..3659 up to 3660 (61 min); 0 = unlimited
 
 
-def body_write_params(did, uid, pwd_block, params: dict[int, bytes]) -> bytes:
+def body_write_params(did: int, uid: int, pwd_block: bytes, params: dict[int, bytes]) -> bytes:
     """ei/b.z(): DID u32, uid u32, pwd[32], count u16, ids[] u16, lens[] u16, values.
     Sent as businessCode 0x0E01 (3585), plaintext body like 0x0201."""
     b = bytearray(struct.pack("<II", did, uid)) + pwd_block
@@ -271,14 +294,14 @@ def body_write_params(did, uid, pwd_block, params: dict[int, bytes]) -> bytes:
     return bytes(b)
 
 
-def body_auto_shutdown(did, uid, pwd_block, seconds: int) -> bytes:
+def body_auto_shutdown(did: int, uid: int, pwd_block: bytes, seconds: int) -> bytes:
     """Set the S216 auto-shutdown limit. 0 = unlimited; otherwise at least 3660 s.
     Capture-verified 2026-10-10: 0x0E01 body tail `0100 140c 0400 <i32 LE>`."""
     s = 0 if seconds <= 0 else max(AUTO_SHUTDOWN_MIN, int(seconds))
     return body_write_params(did, uid, pwd_block, {PARAM_AUTO_SHUTDOWN: struct.pack("<i", s)})
 
 
-def body_read_params(did, uid, pwd_block, ids: list[int]) -> bytes:
+def body_read_params(did: int, uid: int, pwd_block: bytes, ids: list[int]) -> bytes:
     """0x0E02 parameter read (capture-verified): DID, uid, pwd[32], count u16, ids[] u16.
     The ack is empty; the value comes in a following 0x0103 push whose inner cmd is
     0x0E02 and payload = count u16, id u16, len u16, value."""
@@ -325,7 +348,7 @@ def rgbwt_bytes(r: int = 0, g: int = 0, b: int = 0, w_pct: int = 0, t_pct: int =
                        max(0, min(100, t_pct)) * LIGHT_FULL // 100)
 
 
-def body_light_color(did, uid, pwd_block, on: bool, rgbwt: bytes,
+def body_light_color(did: int, uid: int, pwd_block: bytes, on: bool, rgbwt: bytes,
                      special_way: int = 0, light_type: int = 0) -> bytes:
     """sub 0x01 len 12: switch u8 (1 on / 2 off; 0xFF when lightType==4 strip),
     RGBWT[10], specialWay u8.  (55 B)"""
@@ -547,9 +570,10 @@ PARSERS = {
 
 # Families whose WorkStatus carries the S216-style power/energy fields.
 ENERGY_FAMILIES = {Family.ON_WALL, Family.BATH_HEATER, Family.PLUG, Family.SWITCH, Family.MIX}
-# Families whose boiler members (see BOILER_TYPES) have an auto-shutdown write path:
+# Families whose timed members (see TIMED_TYPES) have an auto-shutdown write path:
 # ON_WALL via parameter 0x0C14 (capture-verified), PLUG via sub 0x04 (app + aioswitcher).
-# BATH_HEATER has no write path in either source, so it only reports the value.
+# BATH_HEATER: the app has no write path; switcher_kis sends the type-1 sub 0x04
+# packet to it too, but whether the Heater honours it is unverified, so read-only here.
 AUTO_SHUTDOWN_WRITABLE = {Family.ON_WALL, Family.PLUG}
 # Families with a simple on/off we can drive (MIX: light lines only).
 SWITCHABLE = {Family.ON_WALL, Family.BATH_HEATER, Family.PLUG, Family.SWITCH, Family.LIGHT, Family.MIX}

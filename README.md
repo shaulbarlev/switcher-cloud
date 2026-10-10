@@ -21,10 +21,10 @@ This is unofficial and not affiliated with Switcher.
 |---|---|---|
 | Transport | LAN: UDP broadcasts for state, TCP for commands | Switcher cloud, one TCP connection |
 | Needs internet | No | Yes, and Switcher's servers must be up |
-| Setup | Discovers devices on the network; newer devices need a username and token from Switcher | Sign in with your app account; every device on the account appears |
+| Setup | Discovers devices on the network; newer devices need a username and token from Switcher | Sign in with your app account; every device on the account appears, new ones while running |
 | On Wall boiler | No, control is rejected by the device | Yes, verified |
 | Other devices | Plugs, Touch/V2/V4/Mini boilers, Runners, Breeze, lights; field tested by many users | Same families, mapped from the app's code and cross-checked against aioswitcher; experimental |
-| Boiler entities | switch, remaining time and auto shutdown sensors, `turn_on_with_timer` and `set_auto_off` services | switch, water heater, run timer number, auto shutdown number, time remaining and time on sensors that tick every second |
+| Boiler entities | switch, remaining time and auto shutdown sensors, `turn_on_with_timer` and `set_auto_off` services | switch, water heater, run timer number, auto shutdown number, remaining time and time on sensors that tick every second, the same two services |
 | Breeze (AC) | Full climate entity with the IR code set | Temperature sensor only |
 | Sensors | Power (W), current (A), temperature | Power (W), current (A), energy (kWh), temperature |
 | Updates | Device broadcasts every few seconds | Cloud push when something changes, plus a poll every 60 s (15 s while a boiler is on) |
@@ -34,10 +34,10 @@ This is unofficial and not affiliated with Switcher.
 ## Features
 
 - Every device with on/off gets a switch. Multi-gang wall switches get one per gang.
-- Boilers (On Wall, V2, Touch, V4, Mini, Heater) get a water heater entity, a run timer and the auto shutdown setting.
+- Boilers (On Wall, V2, Touch, V4, Mini) get a water heater entity, a run timer and the auto shutdown setting. The Heater gets the run timer and the time sensors, but no water heater entity, matching `switcher_kis` and aioswitcher where it is its own category.
 - Runner shutters get a cover with open, close, stop and set position, plus a child lock switch. Runner S11 and S12 also get their light lines.
 - Switcher Light SL01, SL02 and SL03 get one on/off light per line.
-- Power, current, energy, time on and time remaining sensors, where the device reports them. Breeze gets a temperature sensor.
+- Power, current, energy, time on and remaining time sensors, where the device reports them. Breeze gets a temperature sensor.
 - Live updates. One connection to the cloud stays open, so a change made in the app shows up a few seconds later.
 
 ## Device support
@@ -51,7 +51,7 @@ Status is per protocol family. The DeviceType is the four hex digit code in the 
 | On Wall boiler (S216) | `0321` | Verified on hardware, including the run timer and auto shutdown | switch, water_heater, number, sensors |
 | V2, Touch, V4, Mini boilers | `01A1` `01A7` `030B` `030F` `0317` | App + aioswitcher agree on on/off, timer, auto shutdown and the status layout | switch, water_heater, number, sensors |
 | Power Plug | `01A8` | App + aioswitcher agree | switch, sensors |
-| Heater | `031F` | App + aioswitcher agree on on/off, timer and status. No auto shutdown write in either | switch, water_heater, run timer, sensors |
+| Heater | `031F` | App + aioswitcher agree on on/off, timer and status. The app has no auto shutdown write; `switcher_kis` exposes `set_auto_off` on it using the type-1 packet, whether the Heater honours it is unverified, so there is no write here | switch, run timer, sensors |
 | Runner, Runner Mini | `0C01` `0C02` | App + aioswitcher agree on position, stop, child lock and status | cover, child lock switch |
 | Runner S11, Runner S12 | `0F01` `0F02` | App + aioswitcher agree, per line | cover and child lock per runner line, light per light line |
 | Light SL01, SL02, SL03 (and Mini) | `0F04` `0F05` `0F06` `0F07` `0F08` | App + aioswitcher agree, per line | one on/off light per line |
@@ -92,7 +92,7 @@ Notes:
 
 - Email and password must each be 32 characters or fewer. The vendor protocol packs them into fixed 32 byte fields.
 - One config entry per Switcher account. Adding the same account twice is rejected.
-- Devices added to the account later appear after you reload the integration.
+- Devices added to the account later appear on the next poll, no reload needed. Removed devices can be deleted from the device page.
 - State is polled every 60 seconds, or every 15 seconds while a boiler is on. When the cloud pushes a change, the integration refreshes a few seconds later instead of waiting for the next poll.
 
 ### Reauthentication
@@ -107,14 +107,14 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 |---|---|---|
 | `switch` | boilers, plugs, wall switches | Main on/off. One per gang on wall switches. |
 | `switch` "Child lock" | Runners, runner lines | The Runner's child lock, as in the app and `switcher_kis`. |
-| `water_heater` | boilers | Shows On / Off. No temperature, the cloud does not report one. |
-| `number` "Run timer" | boilers | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
-| `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. 0 means unlimited; values from 1 to 60 are raised to 61. The Heater reports this value but has no way to set it, so it gets a diagnostic sensor instead. |
+| `water_heater` | On Wall, V2, Touch, V4, Mini | Shows On / Off. No temperature, the cloud does not report one. |
+| `number` "Run timer" | boilers and the Heater | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
+| `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. On Wall: 0 means unlimited; values from 1 to 60 are raised to 61 by the device. V2, Touch, V4, Mini: 60 to 1439 only, the range aioswitcher sends; other values are rejected. The Heater reports this value and gets a diagnostic sensor instead. |
 | `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
 | `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. The On Wall reports 0 here. |
-| `sensor` "Time remaining" | boilers | Seconds until the device switches itself off. Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. 0 when off. |
-| `sensor` "Time on" | boilers | Seconds since the device switched on, from the device's own counter, ticking every second. 0 when off. |
+| `sensor` "Remaining time" | boilers and the Heater | Seconds until the device switches itself off. Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. 0 when off. |
+| `sensor` "Time on" | boilers and the Heater | Seconds since the device switched on, from the device's own counter, ticking every second. 0 when off. |
 | `sensor` "Temperature" | Breeze | Room temperature from the Breeze's own sensor. |
 | `cover` | Runners, runner lines | Open / close / stop / position. Open and close are position 100 and 0, like `switcher_kis`. Device class shutter. |
 | `light` | Light SL01/02/03, S11/S12 light lines | On/off per line. |
@@ -122,6 +122,9 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 
 When a device is offline in the Switcher cloud its entities go unavailable.
 
+## Services
+
+`switcher_cloud.turn_on_with_timer` (field `timer_minutes`, 1 to 150) and `switcher_cloud.set_auto_off` (field `auto_off`, a time string such as `"02:30"`) exist with the same names and fields as in `switcher_kis`, targeting the boiler's switch. An automation written for the official integration ports by changing the domain. The number entities do the same job from the UI.
 
 ## Privacy and security
 
