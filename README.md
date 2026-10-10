@@ -119,7 +119,6 @@ When a device is offline in the Switcher cloud its entities go unavailable.
 
 - Breeze (AC / IR blaster) is not supported and gets no entities.
 - Schedules and timers you set up in the app are not exposed. The run timer here is a one-shot "turn on for N minutes".
-- No temperature readings. The cloud does not provide any.
 - Mix panel runner lines and the colour/white channels of lights are the parts I am least sure about.
 - Polling interval is 60 seconds, 15 seconds while a boiler is on. Not configurable.
 
