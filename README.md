@@ -26,7 +26,7 @@ This is unofficial and not affiliated with Switcher.
 ## Features
 
 - Every device with on/off gets a switch. Multi-gang wall switches get one per gang.
-- Boilers (On Wall, Bath heater) also get a water heater entity, a run timer and the auto shutdown setting. The run timer is in minutes: set it and the device turns itself off when the time is up, which still works if Home Assistant goes down halfway through. Auto shutdown is the same limit you see in the app, read from the device and written back to it.
+- Boilers get a water heater entity, a run timer and the auto shutdown setting.
 - Runner shutters get a cover with open, close, stop and set position.
 - Lights get brightness, RGB, colour temperature and effects.
 - Current, energy and time remaining sensors, where the device reports them.
