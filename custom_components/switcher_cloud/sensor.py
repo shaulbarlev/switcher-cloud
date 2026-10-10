@@ -27,13 +27,14 @@ async def async_setup_entry(
 ) -> None:
     coordinator: SwitcherCloudCoordinator = entry.runtime_data
     async_add_entities(
-        [
+        ent
+        for did, st in coordinator.data.items()
+        if st.get("device_type") in BOILER_DEVICE_TYPES
+        for ent in (
             SwitcherCloudSecondsSensor(coordinator, did),
             SwitcherCloudPowerSensor(coordinator, did),
             SwitcherCloudEnergySensor(coordinator, did),
-        ]
-        for did, st in coordinator.data.items()
-        if st.get("device_type") in BOILER_DEVICE_TYPES
+        )
     )
 
 
