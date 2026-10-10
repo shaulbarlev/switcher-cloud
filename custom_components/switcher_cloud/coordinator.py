@@ -197,6 +197,8 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 _LOGGER.debug("confirm poll failed: %s", err)
                 continue
             self._apply_scan_interval(data)
+            if did in data:
+                data[did]["_seed_reset"] = True   # a command changes the countdown; re-seed it
             self.async_set_updated_data(data)
             if done is None or done(data.get(did, {})):
                 break

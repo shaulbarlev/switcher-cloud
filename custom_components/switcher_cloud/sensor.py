@@ -133,11 +133,19 @@ class SwitcherCloudCountdown(SwitcherCloudSensor):
 
     def _resync(self) -> None:
         st = self._st()
-        device = (st.get("remaining") or 0) if st.get("on") else 0
+        on = bool(st.get("on"))
+        device = (st.get("remaining") or 0) if on else 0
         local = self._local_value()
-        if local is None or abs(local - device) > 3 or device == 0:
-            self._seed = device
-            self._seed_at = time.monotonic()
+        if local is None or not on or device == 0:
+            self._seed, self._seed_at = device, time.monotonic()
+            return
+        # The cloud often hands back a stale (higher) value from an earlier
+        # refresh; a real re-sync can only move the countdown DOWN. Take the
+        # device value only when it is below the local one by more than 3 s,
+        # or when the local one has run out (a new, longer run started).
+        if device < local - 3 or local <= 0 or st.get("_seed_reset"):
+            self._seed, self._seed_at = device, time.monotonic()
+            st.pop("_seed_reset", None)
 
     def _local_value(self) -> int | None:
         if self._seed is None:
