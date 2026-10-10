@@ -14,6 +14,7 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
 from .const import CONF_ACCOUNT, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .devices import (
+    BOILER_FAMILIES,
     Family,
     body_auto_shutdown,
     body_bath_heater,
@@ -28,6 +29,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIRM_INTERVAL = 0.5     # s between confirm polls after a command
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
+ACTIVE_SCAN_INTERVAL = 5   # s while any boiler is on, so the countdown ticks (the app polls at 5 s)
 
 type SwitcherCloudConfigEntry = ConfigEntry["SwitcherCloudCoordinator"]
 
@@ -193,17 +195,28 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             except Exception as err:  # noqa: BLE001 - transient; keep trying
                 _LOGGER.debug("confirm poll failed: %s", err)
                 continue
+            self._apply_scan_interval(data)
             self.async_set_updated_data(data)
             if done is None or done(data.get(did, {})):
                 break
 
     # -- scheduled poll ------------------------------------------------------------
+    @callback
+    def _apply_scan_interval(self, data: dict[str, dict[str, Any]]) -> None:
+        active = any(st.get("on") and Family(st.get("family", "unknown")) in BOILER_FAMILIES
+                     for st in data.values())
+        self.update_interval = timedelta(
+            seconds=ACTIVE_SCAN_INTERVAL if active else DEFAULT_SCAN_INTERVAL)
+
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
             data = await self.hass.async_add_executor_job(self.client.poll)
             if _LOGGER.isEnabledFor(logging.DEBUG):
                 for k, st in data.items():
                     _LOGGER.debug("poll %s on=%s ws=%s", k, st.get("on"), st.get("workstatus_hex"))
+            # Poll fast while a boiler is running so the remaining-time countdown
+            # ticks; drop back to the slow interval once everything is off.
+            self._apply_scan_interval(data)
             return data
         except SwitcherAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err

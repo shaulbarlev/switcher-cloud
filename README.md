@@ -93,7 +93,7 @@ Notes:
 - Email and password must each be 32 characters or fewer. The vendor protocol packs them into fixed 32 byte fields.
 - One config entry per Switcher account. Adding the same account twice is rejected.
 - Devices added to the account later appear after you reload the integration.
-- State is polled every 60 seconds. When the cloud pushes a change, the integration refreshes a few seconds later instead of waiting for the next poll.
+- State is polled every 60 seconds, or every 5 seconds while a boiler is on so the time remaining counts down. When the cloud pushes a change, the integration refreshes a few seconds later instead of waiting for the next poll.
 
 ### Reauthentication
 
@@ -144,7 +144,7 @@ Automations can call `number.set_value` with a number of minutes to start a time
 - Schedules and timers you set up in the app are not exposed. The run timer here is a one-shot "turn on for N minutes".
 - No temperature readings. The cloud does not provide any.
 - Mix panel runner lines and the colour/white channels of lights are the parts I am least sure about.
-- Polling interval is fixed at 60 seconds.
+- Polling interval is 60 seconds, 5 seconds while a boiler is on. Not configurable.
 
 ## Contributing
 
