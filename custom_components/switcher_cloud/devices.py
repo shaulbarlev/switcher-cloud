@@ -1,9 +1,14 @@
 """Device families: classification, command builders, WorkStatus parsers.
 
 Everything here was read out of the decompiled Switcher Smart Home 7.53 app
-(com.ogemray.data.model.Oge*Model and the ei/b.java builders). Only ON_WALL
-(S216) has been run against real hardware. The rest match what the app sends,
-byte for byte, but have not been tested on a device.
+(com.ogemray.data.model.Oge*Model and the ei/b.java builders) and then
+cross-checked against TomerFi/aioswitcher, the field-tested LAN library behind
+Home Assistant's switcher_kis. The LAN control body has the same layout as the
+cloud 0x0201 body (DID | uid | pwd[32] | sub-op | len | args), and the LAN
+state reply carries the same structure the cloud base64s as WorkStatus, so
+aioswitcher's packet templates and parsers are strong evidence for the
+sub-ops and offsets below. Only ON_WALL (S216) has been run against real
+hardware through this integration.
 
 Common cloud control body (businessCode 0x0201), from p5.r():
     DID u32 | uid u32 | native-AES(pwd)[32] | sub-op u8 | len u16 | args...
@@ -33,6 +38,41 @@ class Family(str, Enum):
 
 
 VERIFIED = {Family.ON_WALL}
+
+# Product names per DeviceType, from aioswitcher DeviceType (device/__init__.py)
+# plus the two models only the app knows. Anything else gets a family name.
+PRODUCTS = {
+    "0321": "On Wall (S216)",
+    "031F": "Heater",
+    "030B": "Touch",
+    "030F": "Mini",
+    "0317": "V4",
+    "01A1": "V2 (qualcomm)",
+    "01A7": "V2 (esp)",
+    "01A8": "Power Plug",
+    "0E01": "Breeze",
+    "0C01": "Runner",
+    "0C02": "Runner Mini",
+    "0F01": "Runner S11",
+    "0F02": "Runner S12",
+    "0F04": "Light SL01",
+    "0F07": "Light SL01 Mini",
+    "0F05": "Light SL02",
+    "0F08": "Light SL02 Mini",
+    "0F06": "Light SL03",
+}
+# aioswitcher DeviceCategory.WATER_HEATER plus the app's two boiler models:
+# these get water_heater, run timer and auto-shutdown entities. 01A8 (Power
+# Plug) speaks the same OgeSPlugModel protocol but is a plain outlet.
+BOILER_TYPES = {"0321", "031F", "030B", "030F", "0317", "01A1", "01A7"}
+
+
+def product_name(device_type: str, family: Family) -> str:
+    return PRODUCTS.get(device_type.upper(), MODEL_NAMES.get(family, "Unknown device"))
+
+
+def is_boiler(device_type: str) -> bool:
+    return device_type.upper() in BOILER_TYPES
 
 
 def classify(device_type: str) -> tuple[Family, int, int]:
@@ -125,6 +165,19 @@ def body_plug_single(did, uid, pwd_plain: str, on: bool, isdelay: int = 0) -> by
 
 
 
+def body_plug_auto_shutdown(did, uid, pwd_plain: str, seconds: int) -> bytes:
+    """OgeSPlugModel.getAutoTimeCMD lineNo==0 (OgeSPlugModel.java:60-98): 47 B
+    plaintext body = DID u32, uid u32, pwd l(32), sub 0x04, len 4, seconds u32.
+    Same wrapping as body_plug_single (send via send_control_single).
+    aioswitcher SET_AUTO_OFF_SET_PACKET (api/packets.py) sends the identical
+    tail `04 0400 <u32>` to V2/Touch/V4/Mini over the LAN, field-tested."""
+    e = pwd_plain.encode()[:32].ljust(32, b"\x00")
+    b = struct.pack("<II", did, uid) + e + bytes([0x04]) + struct.pack("<H", 4)
+    b += struct.pack("<I", max(0, int(seconds)))
+    assert len(b) == 47
+    return b
+
+
 def body_switch(did, uid, pwd_block, index: int, on: bool) -> bytes:
     """ei/b.v(): sub 0x01 len 2: index u8 (0 = all gangs, 1..7 = gang), state u8. (45 B)"""
     b = _head(did, uid, pwd_block, 0x01, 2)
@@ -134,8 +187,11 @@ def body_switch(did, uid, pwd_block, index: int, on: bool) -> bytes:
 
 def body_curtain_action(did, uid, pwd_block, action: int, line_no: int = 0,
                         moving: bool = False) -> bytes:
-    """OgeCurtainModel action cmd: sub 0x02 len 2|3: [lineNo] u8, moving u8, action u8.
-       action: 0 = stop, 1 = up/open, 2 = down/close (ACTION_MANUAL_UP/DOWN)."""
+    """OgeCurtainModel.getMunualControlCMD: sub 0x02 len 2|3: [lineNo] u8, moving u8, action u8.
+       action: 0 = stop, 1 = up/open, 2 = down/close (ACTION_MANUAL_UP/DOWN).
+       aioswitcher stop_shutter sends the same `02 0200 0000` (Runner) and
+       `02 0600 0{line}0000` (S11/S12), field-tested. Only stop is cross-checked;
+       manual up/down (1/2) are app-only, the cover uses set-position instead."""
     length = 3 if line_no else 2
     b = _head(did, uid, pwd_block, 0x02, length)
     if line_no:
@@ -145,7 +201,9 @@ def body_curtain_action(did, uid, pwd_block, action: int, line_no: int = 0,
 
 
 def body_curtain_position(did, uid, pwd_block, open_ratio: int, line_no: int = 0) -> bytes:
-    """OgeCurtainModel.getControlCMD: sub 0x01 len 1|2: [lineNo] u8, openRatio u8 (0-100)."""
+    """OgeCurtainModel.getControlCMD: sub 0x01 len 1|2: [lineNo] u8, openRatio u8 (0-100).
+    aioswitcher set_position: RUNNER_SET_POSITION tail `01 0100 <pos>` and
+    GENERAL_TOKEN_COMMAND `01 .. 0{line}<pos>`; 0 = closed, 100 = open."""
     length = 2 if line_no else 1
     b = _head(did, uid, pwd_block, 0x01, length)
     if line_no:
@@ -154,11 +212,44 @@ def body_curtain_position(did, uid, pwd_block, open_ratio: int, line_no: int = 0
     return bytes(b)
 
 
+def body_curtain_lock(did, uid, pwd_block, locked: bool, line_no: int = 0) -> bytes:
+    """OgeCurtainModel.getControlLockCMD: sub 0x07 len 1|2: [lineNo] u8, lock u8.
+    aioswitcher set_shutter_child_lock: RUNNER_SET_CHILD_LOCK tail `07 0100 <01|00>`."""
+    length = 2 if line_no else 1
+    b = _head(did, uid, pwd_block, 0x07, length)
+    if line_no:
+        b += bytes([line_no & 0xFF])
+    b += bytes([1 if locked else 0])
+    return bytes(b)
+
+
 def body_light_toggle(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
     """OgeLightModel sub 0x08 len 3: state u8 (1 = on, 2 = off; note off is 2, not 0), delay u16. (46 B)"""
     b = _head(did, uid, pwd_block, 0x08, 3)
     b += bytes([1 if on else 2]) + struct.pack("<H", delay & 0xFFFF)
     return bytes(b)
+
+
+def next_seed(device: int, local: int | None, on: bool, last_device: int | None,
+              hint_newer: bool) -> int | None:
+    """Decide the new countdown seed, or None to keep counting from the old one.
+
+    The cloud repeats a stale (higher) remaining value from an earlier refresh,
+    so a real re-sync can only move the countdown DOWN. Accept the device value
+    when: there is no local countdown yet, the device is off (seed 0), a timed
+    run was just requested (hint_newer), the device value dropped below the
+    local one by more than 3 s, or the local countdown ran out AND the device
+    reports something other than the same stale number.
+    """
+    if not on:
+        return 0
+    if local is None or hint_newer:
+        return device
+    if device < local - 3:
+        return device
+    if local <= 0 and device != last_device:
+        return device
+    return None
 
 
 # ---- parameter writes (businessCode 0x0E01, ei/b.z via OgeCommonDeviceModel.getWriteParamsCMD) ----
@@ -266,6 +357,12 @@ class State:
     white_pct: int | None = None              # light: W channel 0..100
     temp_pct: int | None = None               # light: T channel 0..100 (direction unverified)
     effect: int | None = None                 # light: specialWay
+    temperature: float | None = None          # breeze: room temperature C
+    mode: int | None = None                   # breeze: 1 auto 2 dry 3 fan 4 cool 5 heat
+    target_temp: int | None = None            # breeze: C
+    fan: int | None = None                    # breeze: 0 auto 1 low 2 med 3 high
+    swing: bool | None = None                 # breeze
+    remote_id: str | None = None              # breeze: IRSet id (8 chars)
 
     def as_dict(self) -> dict:
         return {k: v for k, v in self.__dict__.items() if v is not None}
@@ -301,15 +398,21 @@ def parse_bath_heater(b: bytes) -> State:
     32 B: wifi, switch[8], power i32@9, voltage i32@13, current i32@17,
           lastTime u16@21, delay i32@23, openTime i32@27, isDelay u8@31.
     33 B: wifi, switch[8], power@9, voltage@13, current@17, delay i32@21,
-          openTime i32@25, lastTime i32@29. (no isdelay byte)"""
+          openTime i32@25, lastTime i32@29. (no isdelay byte)
+    aioswitcher's Heater (031f) state parser (api/messages.py get_heater_*)
+    reads the 33 B layout at the same offsets and names them: @1 state,
+    @9 power (W), @21 auto shutdown, @25 time on, @29 time left. So Java's
+    "lastTime" is the remaining run time, like S216's u16@21."""
     if len(b) == 32:
+        rem = _u16(b, 21)
         return State(wifi=b[0], on=b[1] == 1, power_raw=_u32(b, 9),
-                     lasttime=_u16(b, 21), autoclosing=_u32(b, 23),
+                     lasttime=rem, remaining=rem, autoclosing=_u32(b, 23),
                      secs_on=_u32(b, 27), isdelay=b[31])
     if len(b) == 33:
+        rem = _u32(b, 29)
         return State(wifi=b[0], on=b[1] == 1, power_raw=_u32(b, 9),
                      autoclosing=_u32(b, 21), secs_on=_u32(b, 25),
-                     lasttime=_u32(b, 29))
+                     lasttime=rem, remaining=rem)
     return State()
 
 
@@ -326,7 +429,11 @@ def parse_plug(b: bytes, line_no: int = 0) -> State:
        75 B: wifi u8, totalPowers i64@1, totalUsageTimes i32@9, currentPowers i64@13,
              then per-line blocks @21/37/53
        other (>=28): switch u16, power i32, elect i64, lasttime i32, opentime i32,
-             autoclosing i32, direction u8, isdelay u8  (single plug)."""
+             autoclosing i32, direction u8, isdelay u8  (single plug).
+    The single-plug layout is what aioswitcher parses for V2/Touch/V4/Mini/
+    Power Plug (api/messages.py StateMessageParser, LAN reply byte 75 = our
+    byte 0): state @0, power W u16 @2, time left @14, time on @18, auto
+    shutdown @22. So "lasttime" = remaining run time; power raw = watts."""
     n = len(b)
     if n in (65, 69, 75):
         base = 21 if n == 75 else 1
@@ -341,9 +448,10 @@ def parse_plug(b: bytes, line_no: int = 0) -> State:
             st.power_raw = int(_u64(b, 13))
         return st
     if n >= 28:
+        rem = _u32(b, 14)
         return State(on=_u16(b, 0) == 1, power_raw=_u32(b, 2),
                      energy_kwh=round(_u64(b, 6) / 3_600_000 / 1000, 3),
-                     lasttime=_u32(b, 14), secs_on=_u32(b, 18),
+                     lasttime=rem, remaining=rem, secs_on=_u32(b, 18),
                      autoclosing=_u32(b, 22), isdelay=b[27])
     return State()
 
@@ -373,7 +481,10 @@ def parse_switch(b: bytes) -> State:
 def parse_curtain(b: bytes, line_no: int = 0) -> State:
     """OgeCurtainModel.parseWorkStatus: wifi u8, switchData[8] (65 B: per-line blocks).
     switchData (UI a1/e2.java:335): [0] position % (0..100), [1] lock, [2] moving up,
-    [3] moving down, [4] calibrated, [5] mode (0 auto / 1 manual)."""
+    [3] moving down, [4] calibrated, [5] mode (0 auto / 1 manual).
+    aioswitcher reads the same 16 B stride: position @+0, child lock @+1,
+    direction u16 @+2 ("0100" up, "0001" down, "0000" stop), block index =
+    lineNo - 1 (device/tools.py get_shutter_*_packet_index). Field-tested."""
     if len(b) < 9:
         return State()
     off = 1
@@ -403,6 +514,24 @@ def parse_light(b: bytes) -> State:
                  wifi=b[14] if len(b) > 14 else None)
 
 
+AC_MODES = {1: "auto", 2: "dry", 3: "fan_only", 4: "cool", 5: "heat"}
+
+
+def parse_aircon(b: bytes) -> State:
+    """OgeAirConditionModel.parseWorkStatus (30 or 32 B): wifi u8, temperature
+    u16 (tenths of C), ACData[4] = power, mode, target temp, fan<<4 | swing,
+    tempUnit u8, deviceType u8, codeID str[8] (IRSet remote id), then
+    lasttime/opentime/autoclosing i32, isdelay u8.
+    aioswitcher's Breeze parser reads the identical layout (api/messages.py
+    get_thermostat_*: temp u16, state, mode, target, fan nibble, swing nibble,
+    remote id at +9..+17), field-tested."""
+    if len(b) < 17:
+        return State()
+    return State(wifi=b[0], temperature=_u16(b, 1) / 10, on=b[3] == 1, mode=b[4],
+                 target_temp=b[5], fan=b[6] >> 4, swing=bool(b[6] & 0x0F),
+                 remote_id=b[9:17].decode("ascii", "replace").rstrip("\x00"))
+
+
 PARSERS = {
     Family.ON_WALL: lambda b, ln, lt: parse_onwall(b),
     Family.BATH_HEATER: lambda b, ln, lt: parse_bath_heater(b),
@@ -411,23 +540,26 @@ PARSERS = {
     Family.CURTAIN: lambda b, ln, lt: parse_curtain(b, ln),
     Family.LIGHT: lambda b, ln, lt: parse_light(b),
     Family.MIX: parse_mix_line,
+    Family.AIRCON: lambda b, ln, lt: parse_aircon(b),
 }
 
 # Families whose WorkStatus carries the S216-style power/energy fields.
 ENERGY_FAMILIES = {Family.ON_WALL, Family.BATH_HEATER, Family.PLUG, Family.SWITCH, Family.MIX}
-# Boiler-type devices → water_heater entity.
-BOILER_FAMILIES = {Family.ON_WALL, Family.BATH_HEATER}
-# Families with a simple on/off we can drive (MIX: plug/light lines only).
+# Families whose boiler members (see BOILER_TYPES) have an auto-shutdown write path:
+# ON_WALL via parameter 0x0C14 (capture-verified), PLUG via sub 0x04 (app + aioswitcher).
+# BATH_HEATER has no write path in either source, so it only reports the value.
+AUTO_SHUTDOWN_WRITABLE = {Family.ON_WALL, Family.PLUG}
+# Families with a simple on/off we can drive (MIX: light lines only).
 SWITCHABLE = {Family.ON_WALL, Family.BATH_HEATER, Family.PLUG, Family.SWITCH, Family.LIGHT, Family.MIX}
 
 MODEL_NAMES = {
     Family.ON_WALL: "On Wall (S216)",
-    Family.BATH_HEATER: "Bath heater / Touch",
+    Family.BATH_HEATER: "Heater",
     Family.PLUG: "Power plug",
     Family.SWITCH: "Wall switch",
     Family.CURTAIN: "Runner / shutter",
-    Family.LIGHT: "Light",
-    Family.MIX: "Mix panel (lines)",
-    Family.AIRCON: "Breeze (unsupported)",
+    Family.LIGHT: "Colour light",
+    Family.MIX: "Runner / Light panel",
+    Family.AIRCON: "Breeze (sensor only)",
     Family.UNKNOWN: "Unknown device",
 }

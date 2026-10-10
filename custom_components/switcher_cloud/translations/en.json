@@ -31,32 +31,79 @@
   },
   "entity": {
     "switch": {
-      "gang": { "name": "Switch {n}" },
-      "line": { "name": "Line {n}" }
+      "gang": {
+        "name": "Switch {n}"
+      },
+      "line": {
+        "name": "Line {n}"
+      },
+      "child_lock": {
+        "name": "Child lock"
+      },
+      "line_child_lock": {
+        "name": "Line {n} child lock"
+      }
     },
     "cover": {
-      "line": { "name": "Line {n}" }
+      "line": {
+        "name": "Line {n}"
+      }
     },
     "sensor": {
-      "current": { "name": "Current" },
-      "energy": { "name": "Energy" },
-      "time_remaining": { "name": "Time remaining" }
+      "current": {
+        "name": "Current"
+      },
+      "energy": {
+        "name": "Energy"
+      },
+      "time_remaining": {
+        "name": "Auto off at"
+      },
+      "power": {
+        "name": "Power"
+      },
+      "auto_shutdown": {
+        "name": "Auto shutdown"
+      },
+      "temperature": {
+        "name": "Temperature"
+      }
     },
     "water_heater": {
       "boiler": {
         "name": "Water heater",
-        "state": { "electric": "On", "off": "Off" }
+        "state": {
+          "electric": "On",
+          "off": "Off"
+        }
       }
     },
     "number": {
-      "run_timer": { "name": "Run timer" },
-      "auto_shutdown": { "name": "Auto shutdown" }
+      "run_timer": {
+        "name": "Run timer"
+      },
+      "auto_shutdown": {
+        "name": "Auto shutdown"
+      }
+    },
+    "light": {
+      "line": {
+        "name": "Line {n}"
+      }
     }
   },
   "exceptions": {
-    "device_unavailable": { "message": "The device is no longer in your Switcher account." },
-    "unsupported": { "message": "On/off is not supported for {family} devices yet." },
-    "command_failed": { "message": "The Switcher cloud rejected the command: {error}" },
-    "invalid_auth": { "message": "The Switcher cloud rejected the saved password. Re-authenticate the integration." }
+    "device_unavailable": {
+      "message": "The device is no longer in your Switcher account."
+    },
+    "unsupported": {
+      "message": "On/off is not supported for {family} devices yet."
+    },
+    "command_failed": {
+      "message": "The Switcher cloud rejected the command: {error}"
+    },
+    "invalid_auth": {
+      "message": "The Switcher cloud rejected the saved password. Re-authenticate the integration."
+    }
   }
 }

@@ -1,8 +1,13 @@
-"""Light platform for Ogemray colour lights (OgeLightModel, mainType 8). Not verified on hardware.
+"""Light platform.
 
-Switcher's own app ships no colour-light UI (the model is SDK residue), so the
-wire layout comes from the model's setters/getters only. On/off and RGB scaling
-are high-confidence; W/T semantics and colour-temperature direction are not.
+Two kinds:
+- Switcher Light SL01/SL02/SL03 and the light lines of Runner S11/S12 (mainType
+  0F, lineType 3): plain on/off, sub 0x0A with the line number, exactly the
+  packet aioswitcher's set_light sends and the entity switcher_kis builds.
+- Ogemray colour lights (OgeLightModel, mainType 8): Switcher's app ships no UI
+  for them (SDK residue), so the layout comes from the model's setters/getters
+  only. On/off and RGB scaling are high-confidence; W/T semantics and
+  colour-temperature direction are not. Not verified on hardware.
 """
 from __future__ import annotations
 
@@ -38,11 +43,36 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
-    async_add_entities(
-        SwitcherCloudLight(coordinator, did)
-        for did, st in coordinator.data.items()
-        if Family(st.get("family", "unknown")) is Family.LIGHT
-    )
+    entities: list[LightEntity] = []
+    for did, st in coordinator.data.items():
+        fam = Family(st.get("family", "unknown"))
+        if fam is Family.LIGHT:
+            entities.append(SwitcherCloudLight(coordinator, did))
+        elif fam is Family.MIX and st.get("line_type") != 12:
+            entities.append(SwitcherCloudMixLight(coordinator, did))
+    async_add_entities(entities)
+
+
+class SwitcherCloudMixLight(SwitcherCloudEntity, LightEntity):
+    """On/off light line of an S11/S12/SL panel (OgeSPlugAfterPanS11Model)."""
+
+    _attr_color_mode = ColorMode.ONOFF
+    _attr_supported_color_modes = {ColorMode.ONOFF}
+
+    def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
+        super().__init__(coordinator, did)
+        self._attr_unique_id = f"switcher_cloud_{did}_light"
+
+    @property
+    def is_on(self) -> bool | None:
+        on = self._st().get("on")
+        return None if on is None else bool(on)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._did, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._did, False)
 
 
 class SwitcherCloudLight(SwitcherCloudEntity, LightEntity):

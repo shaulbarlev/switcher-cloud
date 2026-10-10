@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -14,13 +15,13 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, Upda
 from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
 from .const import CONF_ACCOUNT, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .devices import (
-    BOILER_FAMILIES,
     Family,
     body_auto_shutdown,
     body_bath_heater,
     body_light_toggle,
     body_onwall,
     body_plug,
+    body_plug_auto_shutdown,
     body_plug_single,
     body_switch,
 )
@@ -53,6 +54,10 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         )
         self.client = SwitcherClient(entry.data[CONF_ACCOUNT], entry.data[CONF_PASSWORD])
         self._command_locks: dict[str, asyncio.Lock] = {}
+        # did -> (seconds, monotonic time) of the last timed run we requested;
+        # the countdown sensor seeds from it so an extended run is not clipped
+        # by a stale cloud value.
+        self.run_hint: dict[str, tuple[int, float]] = {}
         self._refresh_debounce_task: asyncio.Task | None = None
         self._realtime_started = False
 
@@ -119,6 +124,10 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             uid = self.client.uid
             d = st["did_int"]
             secs = max(0, int(run_seconds)) if on else 0
+            if secs:
+                self.run_hint[did] = (secs, time.monotonic())
+            elif not on:
+                self.run_hint.pop(did, None)
             single = None
             if fam is Family.ON_WALL:
                 body = body_onwall(d, uid, pwd, on, isdelay=secs)
@@ -144,15 +153,24 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                                          single_did=single)
 
     async def async_set_auto_shutdown(self, did: str, seconds: int) -> None:
-        """Set the device's auto-shutdown limit (S216 parameter 0x0C14, 0x0E01 write)."""
+        """Set the device's auto-shutdown limit.
+        S216: parameter 0x0C14 via 0x0E01 (capture-verified).
+        V2/Touch/V4/Mini (PLUG family boilers): sub 0x04 on the single-plug path
+        (OgeSPlugModel.getAutoTimeCMD, same tail as aioswitcher set_auto_shutdown)."""
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             st = (self.data or {}).get(did)
             if st is None:
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="device_unavailable")
-            body = body_auto_shutdown(st["did_int"], self.client.uid,
-                                      self.client.pwd_block(st.get("device_pwd") or ""), seconds)
+            pwd_plain = st.get("device_pwd") or ""
+            if Family(st.get("family", "unknown")) is Family.PLUG:
+                body = body_plug_auto_shutdown(st["did_int"], self.client.uid, pwd_plain, seconds)
+                job, args = self.client.send_control_single, (st["did_int"], body)
+            else:
+                body = body_auto_shutdown(st["did_int"], self.client.uid,
+                                          self.client.pwd_block(pwd_plain), seconds)
+                job, args = self.client.send_write_params, (body,)
             try:
-                await self.hass.async_add_executor_job(self.client.send_write_params, body)
+                await self.hass.async_add_executor_job(job, *args)
             except SwitcherAuthError as err:
                 raise HomeAssistantError(translation_domain=DOMAIN, translation_key="invalid_auth") from err
             except Exception as err:  # noqa: BLE001
@@ -197,8 +215,6 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 _LOGGER.debug("confirm poll failed: %s", err)
                 continue
             self._apply_scan_interval(data)
-            if did in data:
-                data[did]["_seed_reset"] = True   # a command changes the countdown; re-seed it
             self.async_set_updated_data(data)
             if done is None or done(data.get(did, {})):
                 break
@@ -206,8 +222,7 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
     # -- scheduled poll ------------------------------------------------------------
     @callback
     def _apply_scan_interval(self, data: dict[str, dict[str, Any]]) -> None:
-        active = any(st.get("on") and Family(st.get("family", "unknown")) in BOILER_FAMILIES
-                     for st in data.values())
+        active = any(st.get("on") and st.get("boiler") for st in data.values())
         self.update_interval = timedelta(
             seconds=ACTIVE_SCAN_INTERVAL if active else DEFAULT_SCAN_INTERVAL)
 

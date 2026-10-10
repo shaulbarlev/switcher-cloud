@@ -154,3 +154,117 @@ def test_auto_shutdown_read_and_push_payload():
     assert body[40:] == bytes.fromhex("0100140c")                       # captured 0x0E02 tail
     vals = devices.parse_params_payload(bytes.fromhex("0100140c0400c0120000"))  # captured push
     assert struct.unpack("<i", vals[devices.PARAM_AUTO_SHUTDOWN])[0] == 4800
+    assert devices.parse_params_payload(bytes.fromhex("0100140c04")) == {}   # truncated
+
+
+def test_next_seed_rules():
+    ns = devices.next_seed
+    assert ns(0, None, False, None, False) == 0            # off -> 0
+    assert ns(179, None, True, None, False) == 179          # first value
+    assert ns(179, 150, True, 179, False) is None           # stale repeat, keep counting
+    assert ns(100, 150, True, 179, False) == 100            # real drop -> take it
+    assert ns(179, 0, True, 179, False) is None             # ran out, same stale number
+    assert ns(600, 0, True, 179, False) == 600              # ran out, new value -> new run
+    assert ns(179, 150, True, 179, True) == 179             # hint newer -> re-seed
+
+
+def test_dispatch_routes_param_push_to_waiter_not_push_callback():
+    c = api.SwitcherClient("a", "b")
+    seen = []
+    c._on_push = seen.append
+    q = __import__("queue").Queue()
+    c._pending[1234] = q
+    body = struct.pack("<HHIBH", 0x0E02, 1234, 0, 0, 10) + bytes.fromhex("0100140c0400c0120000")
+    c._dispatch({"cmd": 0x0103, "serial": 99, "body": body, "errcode": 0})
+    assert q.get_nowait()["payload"] == bytes.fromhex("0100140c0400c0120000")
+    assert seen == []                                       # never reaches the refresh path
+    other = struct.pack("<HHIBH", 0x0201, 5, 0, 0, 3) + b"\x23\x00\x00"
+    c._dispatch({"cmd": 0x0103, "serial": 98, "body": other, "errcode": 0})
+    assert len(seen) == 1                                   # real device pushes still do
+
+
+# ---- cross-checks against aioswitcher (field-tested LAN library) -------------------
+# aioswitcher's LAN control body is DID|uid|pwd[32]|sub|len|args, the same as the
+# cloud 0x0201 body, so its packet templates pin our sub-op tails byte for byte.
+# The "37" that precedes each sub-op in api/packets.py is the last pwd byte.
+
+def test_runner_tails_match_aioswitcher_packets():
+    pwd = b"\x00" * 32
+    # RUNNER_SET_POSITION: "3701" + "0100" + pos      (Runner / Runner Mini)
+    assert devices.body_curtain_position(1, 2, pwd, 0x32)[40:] == bytes.fromhex("01010032")
+    # GENERAL_TOKEN_COMMAND set_position: "3701" .. "0{index}{pos}" (S11 line 3)
+    assert devices.body_curtain_position(1, 2, pwd, 100, line_no=3)[40:] == bytes.fromhex("0102000364")
+    # RUNNER_STOP_COMMAND: "370202000000"
+    assert devices.body_curtain_action(1, 2, pwd, 0)[40:] == bytes.fromhex("0202000000")
+    # token stop_shutter: "3702" .. "0{index}0000" (S12 line 2)
+    assert devices.body_curtain_action(1, 2, pwd, 0, line_no=2)[40:] == bytes.fromhex("020300020000")
+    # RUNNER_SET_CHILD_LOCK: "3707" + "0100" + 01
+    assert devices.body_curtain_lock(1, 2, pwd, True)[40:] == bytes.fromhex("07010001")
+    assert devices.body_curtain_lock(1, 2, pwd, False, line_no=1)[40:] == bytes.fromhex("0702000100")
+
+
+def test_mix_light_tail_matches_aioswitcher_set_light():
+    # SET_LIGHT_PRECOMMAND "370a" + "0600" + "0{index}{01|00}" + "00000000"
+    body = devices.body_plug(1, 2, b"\x00" * 32, True, line_no=1)
+    assert body[40:] == bytes.fromhex("0a0600010100000000")
+    assert devices.body_plug(1, 2, b"\x00" * 32, False, line_no=2)[40:] == bytes.fromhex("0a0600020000000000")
+
+
+def test_type1_plug_tails_match_aioswitcher_packets():
+    # SEND_CONTROL_PACKET: "00" + "01" + "0600" + "0{cmd}" + "00" + timer u32
+    body = devices.body_plug_single(1, 2, "p", True, isdelay=15 * 60)
+    assert body[40:] == bytes.fromhex("010600") + b"\x01\x00" + struct.pack("<I", 900)
+    # SET_AUTO_OFF_SET_PACKET: "00" + "04" + "0400" + seconds u32
+    body = devices.body_plug_auto_shutdown(1, 2, "p", 7200)
+    assert len(body) == 47 and body[40:] == bytes.fromhex("040400") + struct.pack("<I", 7200)
+
+
+def test_single_plug_workstatus_offsets_match_aioswitcher_state_parser():
+    # StateMessageParser: state @0, power W u16 @2, time_left @14, time_on @18, auto_shutdown @22
+    b = struct.pack("<HI", 1, 2300) + struct.pack("<Q", 0) + struct.pack("<III", 1234, 60, 3600) + b"\x00\x01"
+    st = devices.parse_plug(b)
+    assert st.on and st.power_raw == 2300 and st.remaining == 1234
+    assert st.secs_on == 60 and st.autoclosing == 3600 and st.isdelay == 1
+
+
+def test_heater_33b_matches_aioswitcher_heater_parser():
+    # get_heater_*: state @1, power @9, auto_shutdown @21, time_on @25, time_left @29
+    b = bytes([7, 1] + [0] * 7) + struct.pack("<III", 1500, 0, 0) + struct.pack("<III", 7200, 300, 2500)
+    st = devices.parse_bath_heater(b)
+    assert st.on and st.power_raw == 1500 and st.autoclosing == 7200
+    assert st.secs_on == 300 and st.remaining == 2500
+    # 32 B variant: lastTime u16 @21 is the remaining time too
+    b32 = bytes([7, 1] + [0] * 7) + struct.pack("<III", 1500, 0, 0) + struct.pack("<H", 99) \
+        + struct.pack("<II", 7200, 300) + b"\x01"
+    assert devices.parse_bath_heater(b32).remaining == 99
+
+
+def test_curtain_blocks_match_aioswitcher_direction_encoding():
+    # 65 B panel status: wifi + 4 x 16 B blocks; direction "0100" = up, "0001" = down
+    blk = lambda pos, lock, up, down: bytes([pos, lock, up, down, 1, 0, 0, 0]) + b"\x00" * 8
+    b = bytes([60]) + blk(100, 0, 0, 0) + blk(40, 1, 1, 0) + blk(0, 0, 0, 1) + blk(0, 0, 0, 0)
+    assert len(b) == 65
+    l2 = devices.parse_curtain(b, 2)
+    assert l2.position == 40 and l2.locked and l2.moving_up and not l2.moving_down
+    l3 = devices.parse_curtain(b, 3)
+    assert l3.position == 0 and l3.moving_down and not l3.on
+
+
+def test_breeze_workstatus_matches_aioswitcher_thermostat_parser():
+    # wifi, temp u16 tenths, ACData[power, mode, target, fan<<4|swing], unit, type, codeID[8]
+    b = bytes([50]) + struct.pack("<H", 235) + bytes([1, 4, 24, 0x31, 0, 0]) + b"ELEC7022" \
+        + struct.pack("<III", 0, 0, 0) + b"\x00"
+    assert len(b) == 30
+    st = devices.parse_aircon(b)
+    assert st.on and st.temperature == 23.5 and st.mode == 4 and st.target_temp == 24
+    assert st.fan == 3 and st.swing is True and st.remote_id == "ELEC7022"
+
+
+def test_product_table_and_boilers():
+    assert devices.classify("030B")[0] is devices.Family.PLUG          # Touch speaks OgeSPlugModel
+    assert devices.product_name("030b", devices.Family.PLUG) == "Touch"
+    assert devices.is_boiler("030F") and devices.is_boiler("0321") and not devices.is_boiler("01A8")
+    assert devices.classify("0F02")[0] is devices.Family.MIX           # Runner S12
+    assert devices.product_name("0F06", devices.Family.MIX) == "Light SL03"
+    assert devices.classify("0E01")[0] is devices.Family.AIRCON
+    assert devices.product_name("0C02", devices.Family.CURTAIN) == "Runner Mini"

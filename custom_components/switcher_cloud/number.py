@@ -3,9 +3,9 @@
 Setting the number to N minutes turns the device ON with isdelay = N*60 s, so
 the device itself switches off after N minutes (OgeSPlugS216Model/ei.b.w:
 sub 0x23 with isdelay seconds; app UI a1/e2.java:437-456, 10 s granularity).
-Setting 0 just turns it off. The device's remaining countdown is not reported
-in WorkStatus (only via 0x0402 reports), so the number reflects the last
-requested value until the device turns off.
+Setting 0 just turns it off. The device reports the remaining seconds in
+WorkStatus; the Auto off at sensor shows it. This number shows the requested
+run length until the device turns off.
 """
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
-from .devices import BOILER_FAMILIES, Family
+from .devices import AUTO_SHUTDOWN_WRITABLE, Family
 from .entity import SwitcherCloudEntity
 
 PARALLEL_UPDATES = 0
@@ -31,8 +31,10 @@ async def async_setup_entry(
     coordinator = entry.runtime_data
     entities: list[NumberEntity] = []
     for did, st in coordinator.data.items():
-        if Family(st.get("family", "unknown")) in BOILER_FAMILIES:
-            entities.append(SwitcherCloudRunTimer(coordinator, did))
+        if not st.get("boiler"):
+            continue
+        entities.append(SwitcherCloudRunTimer(coordinator, did))
+        if Family(st.get("family", "unknown")) in AUTO_SHUTDOWN_WRITABLE:
             entities.append(SwitcherCloudAutoShutdown(coordinator, did))
     async_add_entities(entities)
 
@@ -77,9 +79,12 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
 class SwitcherCloudAutoShutdown(SwitcherCloudEntity, NumberEntity):
     """The device's own auto-shutdown limit, the same setting as in the app.
 
-    Read every poll via a 0x0E02 parameter read (param 0x0C14), written with
-    0x0E01. In minutes; 0 = unlimited. Anything from 1 to 60 minutes is raised
-    to 61 by the device, matching the app. Capture-verified 2026-10-10.
+    S216: read every poll via a 0x0E02 parameter read (param 0x0C14), written
+    with 0x0E01. Capture-verified 2026-10-10. V2/Touch/V4/Mini: read from
+    WorkStatus (autoclosing i32 @22), written with sub 0x04, the same packet
+    aioswitcher's set_auto_shutdown sends over the LAN.
+    In minutes; 0 = unlimited. Anything from 1 to 60 minutes is raised to 61
+    by the S216 (matching the app); aioswitcher allows 1 to 24 h.
     """
 
     _attr_translation_key = "auto_shutdown"

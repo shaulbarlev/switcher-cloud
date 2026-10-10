@@ -7,7 +7,7 @@ Switcher devices in Home Assistant, through the Switcher cloud.
 [![Min HA version](https://img.shields.io/badge/Home%20Assistant-2025.3%2B-blue.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/github/license/shaulbarlev/switcher-cloud)](LICENSE)
 
-> Only the On Wall boiler has been tested on real hardware. The other device families were taken from the official app's code and have not been run against a device yet. See the [support table](#device-support).
+> Only the On Wall boiler has been tested on real hardware. The other device families were taken from the official app's code and cross-checked against [aioswitcher](https://github.com/TomerFi/aioswitcher), the field-tested LAN library behind Home Assistant's `switcher_kis`, but have not been run against a device through this integration yet. See the [support table](#device-support).
 
 ---
 
@@ -26,30 +26,32 @@ This is unofficial and not affiliated with Switcher.
 ## Features
 
 - Every device with on/off gets a switch. Multi-gang wall switches get one per gang.
-- Boilers get a water heater entity, a run timer and the auto shutdown setting.
-- Runner shutters get a cover with open, close, stop and set position.
-- Lights get brightness, RGB, colour temperature and effects.
-- Current, energy and time remaining sensors, where the device reports them.
+- Boilers (On Wall, V2, Touch, V4, Mini, Heater) get a water heater entity, a run timer and the auto shutdown setting.
+- Runner shutters get a cover with open, close, stop and set position, plus a child lock switch. Runner S11 and S12 also get their light lines.
+- Switcher Light SL01, SL02 and SL03 get one on/off light per line.
+- Power, current, energy and auto-off-time sensors, where the device reports them. Breeze gets a temperature sensor.
 - Live updates. One connection to the cloud stays open, so a change made in the app shows up a few seconds later.
 
 ## Device support
 
 The only model tested is the On Wall, as it is the only Switcher product I have. Assume experimental support for all the rest.
 
-Status is per protocol family. The DeviceType is the four hex digit code in the diagnostics download.
+Status is per protocol family. The DeviceType is the four hex digit code in the diagnostics download. "Evidence" says where the bytes come from: the decompiled app, and whether aioswitcher (which drives the same devices over the LAN with the same command and status layouts) agrees.
 
-| Switcher product | DeviceType | Status | Entities |
+| Switcher product | DeviceType | Evidence | Entities |
 |---|---|---|---|
-| On Wall boiler (S216) | `0321` | Verified, including the run timer | switch, water_heater, number, sensors |
-| Bath heater / Touch boiler | `031F` | Unverified | switch, water_heater, number, sensors |
-| Power plugs / smart plugs | `030B` `030F` `0317` `01A1` `01A7` `01A8` | Unverified | switch, sensors |
-| Wall switches, multi-gang | other `01xx` / `03xx` | Unverified | one switch per gang, sensors |
-| Runner shutters / curtains | `0Cxx` | Unverified | cover |
-| Mix panels (plug and runner lines) | `0Fxx` | Unverified | switch per plug line, cover per runner line, sensors |
-| Lights | `08xx` | Unverified. On/off is solid, colour is a best guess | light |
-| Breeze (AC / IR blaster) | `0Exx` | Not supported | none |
+| On Wall boiler (S216) | `0321` | Verified on hardware, including the run timer and auto shutdown | switch, water_heater, number, sensors |
+| V2, Touch, V4, Mini boilers | `01A1` `01A7` `030B` `030F` `0317` | App + aioswitcher agree on on/off, timer, auto shutdown and the status layout | switch, water_heater, number, sensors |
+| Power Plug | `01A8` | App + aioswitcher agree | switch, sensors |
+| Heater | `031F` | App + aioswitcher agree on on/off, timer and status. No auto shutdown write in either | switch, water_heater, run timer, sensors |
+| Runner, Runner Mini | `0C01` `0C02` | App + aioswitcher agree on position, stop, child lock and status | cover, child lock switch |
+| Runner S11, Runner S12 | `0F01` `0F02` | App + aioswitcher agree, per line | cover and child lock per runner line, light per light line |
+| Light SL01, SL02, SL03 (and Mini) | `0F04` `0F05` `0F06` `0F07` `0F08` | App + aioswitcher agree, per line | one on/off light per line |
+| Breeze (AC / IR blaster) | `0E01` | Status layout agrees with aioswitcher. Control needs the IR code database, not included | temperature sensor only |
+| Wall switches, multi-gang | other `01xx` / `03xx` | App only. Not a Switcher product, gang count is guessed from status | one switch per gang, sensors |
+| Colour lights | `08xx` | App only. On/off is solid, colour is a best guess | light |
 
-Unverified means the command bytes were copied from the decompiled official app and match what the app sends, byte for byte, but nobody has run them against the real device yet. If something is off, the device ignores the command or you get an error toast. It will not damage anything. If you own one of these and it works, or does not, open an issue and say so.
+"App + aioswitcher agree" means the command bytes were copied from the decompiled official app and the same sub-operation and argument layout is what aioswitcher sends to that device over the LAN, where it is known to work. The cloud wraps the same device-side payload, so this is strong evidence, but nobody has run them through this integration yet. If something is off, the device ignores the command or you get an error toast. It will not damage anything. If you own one of these and it works, or does not, open an issue and say so.
 
 ## Installation
 
@@ -95,15 +97,19 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 
 | Entity | Created for | Notes |
 |---|---|---|
-| `switch` | all controllable families | Main on/off. One per gang on wall switches, one per plug line on mix panels. |
-| `water_heater` | On Wall, Bath heater | Shows On / Off. No temperature, the cloud does not report one. |
-| `number` "Run timer" | On Wall, Bath heater | Minutes, slider 0 to 180 in steps of 5. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. The device does not report the remaining time, so the number shows the requested value until the device turns off. The device may clamp the value to its own maximum. |
-| `number` "Auto shutdown" | On Wall, Bath heater | The device's own auto-shutdown limit in minutes, the same setting as in the app. Read from the device every poll. 0 means unlimited; values from 1 to 60 are raised to 61 by the device. |
-| `sensor` "Current" | energy-reporting families | Amperes. The device reports a raw value and the app divides by 220, so this follows the same convention. |
-| `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. |
-| `sensor` "Time remaining" | On Wall, Bath heater | Seconds until the device switches itself off. Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. 0 when off. |
-| `cover` | Runner shutters, mix-panel runner lines | Open / close / stop / position. Device class shutter. |
-| `light` | Lights | Brightness, RGB, colour temperature (2700 to 6500 K nominal), effects. Colour temperature direction unverified. |
+| `switch` | boilers, plugs, wall switches | Main on/off. One per gang on wall switches. |
+| `switch` "Child lock" | Runners, runner lines | The Runner's child lock, as in the app and `switcher_kis`. |
+| `water_heater` | boilers | Shows On / Off. No temperature, the cloud does not report one. |
+| `number` "Run timer" | boilers | Minutes, slider 0 to 180 in steps of 5. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. The device may clamp the value to its own maximum. |
+| `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. 0 means unlimited; values from 1 to 60 are raised to 61. The Heater reports this value but has no way to set it, so it gets a diagnostic sensor instead. |
+| `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
+| `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |
+| `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. The On Wall reports 0 here. |
+| `sensor` "Auto off at" | boilers | The moment the device will switch itself off, as a timestamp. Home Assistant shows it as a live countdown. Empty when the device is off. |
+| `sensor` "Temperature" | Breeze | Room temperature from the Breeze's own sensor. |
+| `cover` | Runners, runner lines | Open / close / stop / position. Open and close are position 100 and 0, like `switcher_kis`. Device class shutter. |
+| `light` | Light SL01/02/03, S11/S12 light lines | On/off per line. |
+| `light` | Colour lights (`08xx`) | Brightness, RGB, colour temperature (2700 to 6500 K nominal), effects. Colour temperature direction unverified. |
 
 When a device is offline in the Switcher cloud its entities go unavailable.
 
@@ -117,9 +123,9 @@ When a device is offline in the Switcher cloud its entities go unavailable.
 
 ## Limitations and not supported
 
-- Breeze (AC / IR blaster) is not supported and gets no entities.
+- Breeze (AC / IR blaster) only gets a temperature sensor. Sending IR commands needs the per-remote IR code set that the app downloads from Switcher (aioswitcher ships it as a 14 MB database); the command framing is known, the codes are not bundled here.
 - Schedules and timers you set up in the app are not exposed. The run timer here is a one-shot "turn on for N minutes".
-- Mix panel runner lines and the colour/white channels of lights are the parts I am least sure about.
+- The colour/white channels of `08xx` lights and the gang count of multi-gang wall switches are the parts I am least sure about. Neither is a Switcher product.
 
 ## Contributing
 

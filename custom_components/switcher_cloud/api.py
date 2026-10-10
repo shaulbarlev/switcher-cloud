@@ -122,7 +122,7 @@ def _b_c_encrypt(pwd: str) -> bytes:
 def _l(n: int, s: str) -> bytes:
     e = s.encode() if s else b""
     if len(e) > n:
-        raise ValueError(f"field longer than {n} bytes")
+        raise SwitcherAuthError(f"field longer than {n} bytes")   # creds can never log in
     return e + b"\x00" * (n - len(e))
 
 
@@ -174,6 +174,7 @@ PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
 # login errcodes that mean "credentials wrong" (app ReuestError strings:
 # 5 account not registered, 11 wrong password, 13 account error)
 AUTH_ERRCODES = {5, 11, 13}
+AUTO_SHUTDOWN_TTL = 600       # s; the 0x0C14 value only changes on a write
 
 
 class SwitcherClient:
@@ -195,9 +196,9 @@ class SwitcherClient:
         self.comm_key = b"\x00" * 32
         self._send_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
-        self._param_waiters: dict[int, queue.Queue] = {}
         self.auth_error: SwitcherAuthError | None = None
         self._warned_types: set = set()
+        self._auto_shutdown_cache: dict[int, tuple[int, float]] = {}
         self._listener: threading.Thread | None = None
         self._stopping = threading.Event()
         self._on_push = None                 # callable(dict) in caller's thread
@@ -341,17 +342,21 @@ class SwitcherClient:
     def _dispatch(self, p: dict) -> None:
         if p["cmd"] == PUSH_CMD:
             push = parse_push(p["body"])
+            # A 0x0E02 param read answers through this push. Hand it to the
+            # request waiting on that serial and stop: it must NOT reach the
+            # push callback, or every read would schedule another refresh and
+            # the integration would poll itself forever.
+            if push and push["cmd"] == 0x0E02:
+                q = self._pending.get(push["serial"])
+                if q is not None:
+                    with contextlib.suppress(queue.Full):
+                        q.put_nowait(push)
+                return
             if push and self._on_push:
                 try:
                     self._on_push(push)
                 except Exception:  # noqa: BLE001
                     _LOGGER.exception("push callback failed")
-            # a 0x0E02 param read answers through this push; hand it to the waiter
-            if push and push["cmd"] == 0x0E02:
-                w = self._param_waiters.get(push["serial"])
-                if w is not None:
-                    with contextlib.suppress(queue.Full):
-                        w.put_nowait(push)
             return                                     # other pushes never resolve requests
         q = self._pending.get(p["serial"])             # replies matched by serial
         if q is not None:
@@ -421,7 +426,7 @@ class SwitcherClient:
         """One executor job: device list + per-device state + decrypted pwd,
         plus the auto-shutdown limit for boilers (0x0E02 read, like the app).
         A malformed row is logged once and skipped, never kills the poll."""
-        from .devices import PARAM_AUTO_SHUTDOWN, BOILER_FAMILIES, Family, body_read_params
+        from .devices import PARAM_AUTO_SHUTDOWN, Family, body_read_params
         out: dict[str, dict[str, Any]] = {}
         for dev in self.get_devices():
             try:
@@ -436,16 +441,32 @@ class SwitcherClient:
                 st["device_pwd"] = self.device_password(dev)
             except Exception:  # noqa: BLE001 - pwd decrypt must not kill the poll
                 st["device_pwd"] = None
-            if Family(st["family"]) in BOILER_FAMILIES and st["device_pwd"] and st.get("online"):
-                try:
-                    vals = self.read_params(body_read_params(
-                        st["did_int"], self.uid, _b_c_encrypt(st["device_pwd"]),
-                        [PARAM_AUTO_SHUTDOWN]))
-                    raw = vals.get(PARAM_AUTO_SHUTDOWN)
-                    if raw and len(raw) >= 4:
-                        st["auto_shutdown_s"] = struct.unpack_from("<i", raw, 0)[0]
-                except Exception as err:  # noqa: BLE001 - optional field
-                    _LOGGER.debug("auto-shutdown read failed: %s", err)
+            # S216 keeps its auto-shutdown limit in parameter 0x0C14 (capture-verified).
+            # The other boilers carry it inside WorkStatus (Java autoclosing / delay,
+            # aioswitcher auto_shutdown), so no extra round trip for them.
+            # The 0x0C14 read is cached: it only changes when someone writes it,
+            # and the confirm loop after a command polls at 2 Hz.
+            if Family(st["family"]) is Family.ON_WALL and st["device_pwd"] and st.get("online"):
+                key = st["did_int"]
+                cached = self._auto_shutdown_cache.get(key)
+                if cached and time.time() - cached[1] < AUTO_SHUTDOWN_TTL:
+                    st["auto_shutdown_s"] = cached[0]
+                else:
+                    try:
+                        vals = self.read_params(body_read_params(
+                            key, self.uid, _b_c_encrypt(st["device_pwd"]),
+                            [PARAM_AUTO_SHUTDOWN]))
+                        raw = vals.get(PARAM_AUTO_SHUTDOWN)
+                        if raw and len(raw) >= 4:
+                            v = struct.unpack_from("<i", raw, 0)[0]
+                            st["auto_shutdown_s"] = v
+                            self._auto_shutdown_cache[key] = (v, time.time())
+                    except Exception as err:  # noqa: BLE001 - optional field
+                        _LOGGER.debug("auto-shutdown read failed: %s", err)
+                        if cached:                      # carry the last good value
+                            st["auto_shutdown_s"] = cached[0]
+            elif st.get("boiler") and st.get("autoclosing") is not None:
+                st["auto_shutdown_s"] = st["autoclosing"]
             out[self.state_key(dev)] = st
         return out
 
@@ -474,12 +495,16 @@ class SwitcherClient:
         p = self.request(0x0E01, body, encrypted=False)
         if p["errcode"] != 0:
             raise SwitcherApiError(f"write params errcode={p['errcode']}")
+        self._auto_shutdown_cache.clear()      # the next poll re-reads the new value
 
     def read_params(self, body: bytes, timeout: float = 10) -> dict[int, bytes]:
         """Parameter read, businessCode 0x0E02. The direct reply is an empty ack;
         the values arrive in a 0x0103 push whose inner cmd is 0x0E02 and whose
-        inner serial equals the serial we sent (capture-verified 2026-10-10)."""
+        inner serial equals the serial we sent (capture-verified 2026-10-10).
+        Both land on the same per-serial queue, in either order."""
         from .devices import parse_params_payload
+        if self.auth_error:
+            raise self.auth_error
         if self._listener is None or not self._listener.is_alive():
             self.start_listener()
         deadline = time.time() + timeout
@@ -489,22 +514,19 @@ class SwitcherClient:
         with self._send_lock:
             serial = self._raw_send(0x0E02, body, encrypted=False)
             self._pending[serial] = q
-            self._param_waiters[serial] = q
         try:
-            ack = q.get(timeout=max(1, deadline - time.time()))
-            if isinstance(ack, Exception):
-                raise ack
-            if ack.get("errcode", 0) != 0:
-                raise SwitcherApiError(f"read params errcode={ack['errcode']}")
-            push = q.get(timeout=max(1, deadline - time.time()))
-            if isinstance(push, Exception):
-                raise push
-            return parse_params_payload(push["payload"])
+            while True:
+                msg = q.get(timeout=max(1, deadline - time.time()))
+                if isinstance(msg, Exception):
+                    raise msg
+                if "payload" in msg:                   # the push carrying the values
+                    return parse_params_payload(msg["payload"])
+                if msg.get("errcode", 0) != 0:         # the ack, if it failed
+                    raise SwitcherApiError(f"read params errcode={msg['errcode']}")
         except queue.Empty:
             raise SwitcherApiError("timeout waiting for 0x0E02 push") from None
         finally:
             self._pending.pop(serial, None)
-            self._param_waiters.pop(serial, None)
 
     def pwd_block(self, device_pwd: str) -> bytes:
         return _b_c_encrypt(device_pwd)
@@ -521,7 +543,7 @@ class SwitcherClient:
 
     @staticmethod
     def device_state(device: dict[str, Any]) -> dict:
-        from .devices import MODEL_NAMES, PARSERS, classify
+        from .devices import PARSERS, classify, is_boiler, product_name
         fam, main, sub = classify(str(device.get("DeviceType", "")))
         line_no = int(device.get("LineNo") or 0)
         line_type = int(device.get("LineType") or 0)
@@ -541,6 +563,7 @@ class SwitcherClient:
         st["dmac"] = device.get("DMAC")
         st["firmware"] = device.get("FirmwareVersion")
         st["product_features"] = device.get("ProductFeatures")
-        st["model"] = MODEL_NAMES.get(fam, "Unknown")
+        st["model"] = product_name(st["device_type"], fam)
+        st["boiler"] = is_boiler(st["device_type"])
         st["workstatus_hex"] = ws.hex()
         return st

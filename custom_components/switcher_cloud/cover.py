@@ -1,4 +1,7 @@
-"""Cover platform for Switcher Runner shutters (OgeCurtainModel). Not verified on hardware."""
+"""Cover platform for Switcher Runner shutters (OgeCurtainModel; Runner, Runner
+Mini, and the runner lines of S11/S12). Not verified on hardware through the
+cloud, but the sub-ops are the ones aioswitcher sends over the LAN: open and
+close are set-position 100 and 0, stop is sub 0x02 (switcher_kis cover.py)."""
 from __future__ import annotations
 
 from typing import Any
@@ -18,7 +21,7 @@ from .entity import SwitcherCloudEntity
 
 PARALLEL_UPDATES = 0
 
-ACTION_STOP, ACTION_UP, ACTION_DOWN = 0, 1, 2
+ACTION_STOP = 0
 
 
 async def async_setup_entry(
@@ -64,31 +67,31 @@ class SwitcherCloudCover(SwitcherCloudEntity, CoverEntity):
     def current_cover_position(self) -> int | None:
         return self._st().get("position")
 
-    def _body(self, action: int) -> bytes:
-        st = self._st()
-        return body_curtain_action(
-            st["did_int"], self.coordinator.client.uid,
-            self.coordinator.client.pwd_block(st.get("device_pwd") or ""),
-            action, st.get("line_no", 0),
-            moving=bool(st.get("moving_up") or st.get("moving_down")))
-
-    async def async_open_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_control(
-            self._did, self._body(ACTION_UP), lambda s: s.get("moving_up") or s.get("on"))
-
-    async def async_close_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_control(
-            self._did, self._body(ACTION_DOWN), lambda s: s.get("moving_down") or not s.get("on"))
-
-    async def async_stop_cover(self, **kwargs: Any) -> None:
-        await self.coordinator.async_control(
-            self._did, self._body(ACTION_STOP),
-            lambda s: not (s.get("moving_up") or s.get("moving_down")))
-
-    async def async_set_cover_position(self, **kwargs: Any) -> None:
+    async def _go(self, position: int) -> None:
         st = self._st()
         body = body_curtain_position(
             st["did_int"], self.coordinator.client.uid,
             self.coordinator.client.pwd_block(st.get("device_pwd") or ""),
-            int(kwargs[ATTR_POSITION]), st.get("line_no", 0))
-        await self.coordinator.async_control(self._did, body, None)
+            position, st.get("line_no", 0))
+        await self.coordinator.async_control(
+            self._did, body,
+            lambda s: s.get("moving_up") or s.get("moving_down") or s.get("position") == position)
+
+    async def async_open_cover(self, **kwargs: Any) -> None:
+        await self._go(100)
+
+    async def async_close_cover(self, **kwargs: Any) -> None:
+        await self._go(0)
+
+    async def async_set_cover_position(self, **kwargs: Any) -> None:
+        await self._go(int(kwargs[ATTR_POSITION]))
+
+    async def async_stop_cover(self, **kwargs: Any) -> None:
+        st = self._st()
+        body = body_curtain_action(
+            st["did_int"], self.coordinator.client.uid,
+            self.coordinator.client.pwd_block(st.get("device_pwd") or ""),
+            ACTION_STOP, st.get("line_no", 0),
+            moving=bool(st.get("moving_up") or st.get("moving_down")))
+        await self.coordinator.async_control(
+            self._did, body, lambda s: not (s.get("moving_up") or s.get("moving_down")))

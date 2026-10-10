@@ -1,16 +1,42 @@
 {
   "entity": {
     "number": {
-      "run_timer": { "default": "mdi:timer-play-outline" },
-      "auto_shutdown": { "default": "mdi:timer-off-outline" }
+      "run_timer": {
+        "default": "mdi:timer-play-outline"
+      },
+      "auto_shutdown": {
+        "default": "mdi:timer-off-outline"
+      }
     },
     "sensor": {
-      "current": { "default": "mdi:current-ac" },
-      "energy": { "default": "mdi:lightning-bolt" },
-      "time_remaining": { "default": "mdi:timer-sand" }
+      "current": {
+        "default": "mdi:current-ac"
+      },
+      "energy": {
+        "default": "mdi:lightning-bolt"
+      },
+      "time_remaining": {
+        "default": "mdi:timer-off-outline"
+      },
+      "power": {
+        "default": "mdi:flash"
+      },
+      "auto_shutdown": {
+        "default": "mdi:timer-off-outline"
+      }
     },
     "water_heater": {
-      "boiler": { "default": "mdi:water-boiler" }
+      "boiler": {
+        "default": "mdi:water-boiler"
+      }
+    },
+    "switch": {
+      "child_lock": {
+        "default": "mdi:lock-open"
+      },
+      "line_child_lock": {
+        "default": "mdi:lock-open"
+      }
     }
   }
 }
