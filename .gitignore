@@ -1,0 +1,14 @@
+# local research artifacts — never publish
+HANDOFF.md
+*.pcap
+capture.pcap
+analyze_capture.py
+diff_capture.py
+replay_test.py
+e2e_test.py
+mcpcall.py
+session.json
+onwall/
+spec/
+.venv/
+.DS_Store
