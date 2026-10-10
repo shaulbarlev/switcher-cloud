@@ -15,7 +15,7 @@ Switcher devices in Home Assistant, through the Switcher cloud.
 
 Home Assistant ships `switcher_kis`, which talks to Switcher devices directly over your LAN. That is the right choice when it works, and it does for most models.
 
-It does not work for the On Wall boiler. The `aioswitcher` maintainers tried in [PR #847](https://github.com/TomerFi/aioswitcher/pull/847). The tracking issue, [aioswitcher #889](https://github.com/TomerFi/aioswitcher/issues/889), ends with "nothing we can do right now", waiting on a Switcher firmware update with no ETA. The same wall came up in [homebridge-switcher-platform #75](https://github.com/nitaybz/homebridge-switcher-platform/issues/75). I own one of these boilers, so I was stuck.
+It does not work for the On Wall boiler. The `aioswitcher` maintainers tried in [PR #847](https://github.com/TomerFi/aioswitcher/pull/847) (issue [aioswitcher #889](https://github.com/TomerFi/aioswitcher/issues/889)). Seems it is dependent on a Switcher firmware update with no ETA. I own one of these boilers, so I was stuck.
 
 So this integration does what the app does. It logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the app. Every device on the account shows up, whether or not it has a local interface. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
 
