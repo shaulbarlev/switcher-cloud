@@ -63,24 +63,24 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
     @callback
     def _handle_reconnect(self) -> None:
         _LOGGER.debug("switcher connection re-established")
-        self._schedule_debounced_refresh()
+        self._schedule_push_debounced_refresh()
 
     @callback
     def _handle_push(self, push: dict) -> None:
         """0x0103 push from the server (device ack / status relay)."""
         _LOGGER.debug("push: %s", push)
-        self._schedule_debounced_refresh()
+        self._schedule_push_debounced_refresh()
 
     @callback
-    def _schedule_debounced_refresh(self) -> None:
+    def _schedule_push_debounced_refresh(self) -> None:
         """One authoritative refresh shortly after any push/reconnect,
         coalescing bursts (min ~4 s apart) instead of per-event polls."""
         if self._refresh_debounce_task and not self._refresh_debounce_task.done():
             return
         self._refresh_debounce_task = self.config_entry.async_create_task(
-            self.hass, self._debounced_refresh(), "switcher_cloud_push_refresh")
+            self.hass, self._push_debounced_refresh(), "switcher_cloud_push_refresh")
 
-    async def _debounced_refresh(self) -> None:
+    async def _push_debounced_refresh(self) -> None:
         await asyncio.sleep(4)
         await self.async_request_refresh()
 
