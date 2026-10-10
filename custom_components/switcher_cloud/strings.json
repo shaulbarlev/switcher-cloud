@@ -43,7 +43,10 @@
       "time_on": { "name": "Time on" }
     },
     "water_heater": {
-      "boiler": { "name": "Water heater" }
+      "boiler": {
+        "name": "Water heater",
+        "state": { "electric": "On", "off": "Off" }
+      }
     },
     "number": {
       "run_timer": { "name": "Run timer" }
