@@ -1,27 +1,35 @@
 # Switcher Cloud for Home Assistant
 
-Switcher devices in Home Assistant, through the Switcher cloud.
-
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
 [![GitHub Release](https://img.shields.io/github/v/release/shaulbarlev/switcher-cloud)](https://github.com/shaulbarlev/switcher-cloud/releases)
 [![Min HA version](https://img.shields.io/badge/Home%20Assistant-2025.3%2B-blue.svg)](https://www.home-assistant.io/)
 [![License](https://img.shields.io/github/license/shaulbarlev/switcher-cloud)](LICENSE)
 
-> Only the On Wall boiler has been tested on real hardware. The other device families were taken from the official app's code and cross-checked against [aioswitcher](https://github.com/TomerFi/aioswitcher), the field-tested LAN library behind Home Assistant's `switcher_kis`, but have not been run against a device through this integration yet. See the [support table](#device-support).
+## Motivation
 
----
+The On Wall boiler is not supported by the official Home Assistant integration, `switcher_kis`. That integration talks to Switcher devices over the LAN, and the On Wall accepts a LAN login but rejects every LAN control command. The `aioswitcher` maintainers tried in [PR #847](https://github.com/TomerFi/aioswitcher/pull/847) (issue [aioswitcher #889](https://github.com/TomerFi/aioswitcher/issues/889)). Seems it is dependent on a Switcher firmware update with no ETA. I own one of these boilers, so I was stuck.
 
-## Why this exists
-
-Home Assistant ships `switcher_kis`, which talks to Switcher devices directly over your LAN. That is the right choice when it works, and it does for most models.
-
-It does not work for the On Wall boiler. The `aioswitcher` maintainers tried in [PR #847](https://github.com/TomerFi/aioswitcher/pull/847) (issue [aioswitcher #889](https://github.com/TomerFi/aioswitcher/issues/889)). Seems it is dependent on a Switcher firmware update with no ETA. I own one of these boilers, so I was stuck.
-
-So this logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the app. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
-
-The protocol is reverse engineered from the Switcher Android app and follows its patterns.
+The official app has no such problem, because it never talks to the device directly; it goes through the Switcher cloud. So this integration does the same: it logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the Android app and which follows its patterns. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
 
 This is unofficial and not affiliated with Switcher.
+
+> Only the On Wall boiler has been tested on real hardware. The other device families were taken from the official app's code and cross-checked against [aioswitcher](https://github.com/TomerFi/aioswitcher), the field-tested LAN library behind `switcher_kis`, but have not been run against a device through this integration yet. See the [support table](#device-support).
+
+## Compared with the official integration
+
+| | `switcher_kis` (official, core) | `switcher_cloud` (this) |
+|---|---|---|
+| Transport | LAN: UDP broadcasts for state, TCP for commands | Switcher cloud, one TCP connection |
+| Needs internet | No | Yes, and Switcher's servers must be up |
+| Setup | Discovers devices on the network; newer devices need a username and token from Switcher | Sign in with your app account; every device on the account appears |
+| On Wall boiler | No, control is rejected by the device | Yes, verified |
+| Other devices | Plugs, Touch/V2/V4/Mini boilers, Runners, Breeze, lights; field tested by many users | Same families, mapped from the app's code and cross-checked against aioswitcher; experimental |
+| Boiler entities | switch, remaining time and auto shutdown sensors, `turn_on_with_timer` and `set_auto_off` services | switch, water heater, run timer number, auto shutdown number, time remaining and time on sensors that tick every second |
+| Breeze (AC) | Full climate entity with the IR code set | Temperature sensor only |
+| Sensors | Power (W), current (A), temperature | Power (W), current (A), energy (kWh), temperature |
+| Updates | Device broadcasts every few seconds | Cloud push when something changes, plus a poll every 60 s (15 s while a boiler is on) |
+| Response time | Milliseconds | About 1.5 s round trip through the cloud |
+| Verified hardware | Many models, by the community | On Wall only, by me |
 
 ## Features
 
