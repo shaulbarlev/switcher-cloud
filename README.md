@@ -36,6 +36,8 @@ This is unofficial and not affiliated with Switcher.
 
 ## Device support
 
+Only my own model, the On Wall boiler, is verified as of today. Nothing else in this table has been tested on a real device.
+
 Status is per protocol family. The DeviceType is the four hex digit code in the diagnostics download.
 
 | Switcher product | DeviceType | Status | Entities |
