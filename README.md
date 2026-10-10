@@ -107,19 +107,6 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 
 When a device is offline in the Switcher cloud its entities go unavailable.
 
-### Dashboard tip
-
-For a boiler, a tile card on the run timer gives you a "boost for 30 minutes" slider:
-
-```yaml
-type: tile
-entity: number.boiler_run_timer
-features:
-  - type: numeric-input
-    style: slider
-```
-
-Automations can call `number.set_value` with a number of minutes to start a timed run. The device handles turning itself off.
 
 ## Privacy and security
 
