@@ -1,4 +1,4 @@
-"""Light platform for Ogemray colour lights (OgeLightModel, mainType 8). Beta, not verified on hardware.
+"""Light platform for Ogemray colour lights (OgeLightModel, mainType 8). Not verified on hardware.
 
 Switcher's own app ships no colour-light UI (the model is SDK residue), so the
 wire layout comes from the model's setters/getters only. On/off and RGB scaling

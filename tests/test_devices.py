@@ -1,6 +1,6 @@
 """Regression tests for the ONLY hardware-verified protocol path (On Wall / S216).
 
-Run:  python -m pytest tests/  (no Home Assistant needed — devices.py is pure Python)
+Run:  python -m pytest tests/  (no Home Assistant needed, devices.py is pure Python)
 """
 import importlib.util
 import struct

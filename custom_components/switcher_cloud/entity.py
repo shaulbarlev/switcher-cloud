@@ -23,7 +23,7 @@ class SwitcherCloudEntity(CoordinatorEntity[SwitcherCloudCoordinator]):
         fam = Family(st.get("family", "unknown"))
         model = MODEL_NAMES.get(fam, "Unknown device")
         if fam not in VERIFIED:
-            model = f"{model} (beta, unverified)"
+            model = f"{model} (unverified)"
         # Mix panels: one HA device per physical panel (lines share the DID);
         # entities are distinguished by name, not by device.
         device_key = str(st.get("did")) if fam is Family.MIX else did
