@@ -1,4 +1,4 @@
-"""Switcher Cloud cloud client — blocking TCP protocol, asyncio-wrapped.
+"""Switcher cloud client. Blocking TCP; Home Assistant runs it in the executor.
 
 Protocol (reverse-engineered from Switcher 7.53, verified by live capture 2026-10-10):
 - TCP to appserver.switcher.co.il:9091, fef0 frames, two-step CRC-CCITT.
@@ -275,7 +275,7 @@ class SwitcherClient:
 
     # -- listener thread (realtime channel) --------------------------------------
     def start_listener(self, on_push=None, on_reconnect=None) -> None:
-        """Start (or ensure) the persistent receive thread. Non-blocking."""
+        """Start the receive thread if it is not already running. Returns at once."""
         self._on_push = on_push or self._on_push
         self._on_reconnect = on_reconnect or self._on_reconnect
         if self._listener and self._listener.is_alive():
@@ -326,7 +326,7 @@ class SwitcherClient:
                 self.close()
                 reconnects += 1
                 delay = min(3 * reconnects, 30)
-                # WARNING once, then DEBUG — an overnight outage must not spam the log
+                # Log a warning once, then debug. An overnight outage should not fill the log.
                 log = _LOGGER.warning if reconnects == 1 else _LOGGER.debug
                 log("switcher connection lost (%s); retry in %ss", err, delay)
                 if self._stopping.wait(delay):
@@ -356,7 +356,7 @@ class SwitcherClient:
                 version: bytes = b"\x03\x05", control: int = 0,
                 relation_id: bytes | None = None,
                 timeout: float = 15) -> dict:
-        """Send one packet on the persistent connection and wait for ITS reply
+        """Send one packet on the persistent connection and wait for its own reply
         (matched by serial). Reconnects on transport failure; raises
         SwitcherAuthError if the listener hit a credential rejection."""
         if self._listener is None or not self._listener.is_alive():
@@ -401,8 +401,8 @@ class SwitcherClient:
         p = self.request(0x1343, b"", encrypted=True)
         if p["errcode"] != 0:
             raise SwitcherApiError(f"device list errcode={p['errcode']}")
-        # 0x1343 reply body is PLAINTEXT JSON (live-capture verified);
-        # only the 0x1102 login reply is AES-encrypted.
+        # The 0x1343 reply body is plain JSON (seen in a live capture). Only the
+        # 0x1102 login reply is AES-encrypted.
         body = p["body"]
         i = body.find(b"{")
         if i < 0:
@@ -456,7 +456,7 @@ class SwitcherClient:
     @staticmethod
     def state_key(device: dict[str, Any]) -> str:
         """Coordinator key. Mix panels (main 15) emit one 0x1343 row per line
-        with the SAME DID (DataParser0x1343.java:62-70) → key by DID+line."""
+        that share one DID (DataParser0x1343.java:62-70), so the key is DID plus line."""
         did = str(device.get("DID"))
         if str(device.get("DeviceType", ""))[:2].upper() == "0F":
             return f"{did}_L{int(device.get('LineNo') or 0)}"

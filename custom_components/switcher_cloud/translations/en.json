@@ -56,6 +56,6 @@
     "device_unavailable": { "message": "The device is no longer in your Switcher account." },
     "unsupported": { "message": "On/off is not supported for {family} devices yet." },
     "command_failed": { "message": "The Switcher cloud rejected the command: {error}" },
-    "invalid_auth": { "message": "The Switcher cloud rejected the stored credentials; re-authentication is required." }
+    "invalid_auth": { "message": "The Switcher cloud rejected the saved password. Re-authenticate the integration." }
   }
 }

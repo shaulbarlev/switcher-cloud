@@ -1,4 +1,4 @@
-"""Sensor platform — current / energy / time-on from WorkStatus (energy families)."""
+"""Sensor platform: current, energy and time-on from WorkStatus, for families that report them."""
 from __future__ import annotations
 
 from collections.abc import Callable

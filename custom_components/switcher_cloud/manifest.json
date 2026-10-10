@@ -8,5 +8,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/shaulbarlev/switcher-cloud/issues",
   "requirements": ["pycryptodome==3.23.0"],
-  "version": "1.5.1"
+  "version": "1.5.2"
 }

@@ -1,4 +1,4 @@
-"""Cover platform — Switcher Runner / shutters (OgeCurtainModel). UNVERIFIED."""
+"""Cover platform for Switcher Runner shutters (OgeCurtainModel). Not verified on hardware."""
 from __future__ import annotations
 
 from typing import Any

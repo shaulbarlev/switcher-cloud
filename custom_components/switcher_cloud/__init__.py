@@ -14,8 +14,9 @@ _LOGGER = logging.getLogger(__name__)
 
 async def async_setup_entry(hass: HomeAssistant, entry: SwitcherCloudConfigEntry) -> bool:
     coordinator = SwitcherCloudCoordinator(hass, entry)
-    # Stop the listener thread on unload AND on failed setup (HA runs
-    # on_unload callbacks in both cases) — no leaked reconnect loops.
+    # Stop the listener thread on unload and on failed setup. HA runs
+    # on_unload callbacks in both cases, so a failed setup can't leak a
+    # reconnect loop.
     entry.async_on_unload(coordinator.stop_realtime)
     await coordinator.async_config_entry_first_refresh()
     entry.runtime_data = coordinator

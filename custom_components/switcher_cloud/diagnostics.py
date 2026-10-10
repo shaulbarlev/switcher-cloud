@@ -1,4 +1,4 @@
-"""Diagnostics — lets users with unverified device types share raw data in issues."""
+"""Diagnostics. Lets people with unverified device types share raw data in an issue."""
 from __future__ import annotations
 
 from typing import Any
@@ -26,9 +26,9 @@ async def async_get_config_entry_diagnostics(
             for i, st in enumerate((coordinator.data or {}).values())
         },
         "note": (
-            "DeviceType = %02X%02X of (main_type, sub_type). Only family "
-            "'on_wall' is verified against hardware; for other families please "
-            "open an issue with this dump and, ideally, a packet capture of the "
-            "official app controlling the device."
+            "DeviceType is main_type and sub_type as two hex bytes. Only the "
+            "on_wall family has been tested on real hardware. For any other "
+            "family, open an issue with this dump. A packet capture of the "
+            "official app controlling the device is what gets it verified."
         ),
     }

@@ -1,4 +1,4 @@
-"""Number platform — timed run ("boost") for boiler-type devices.
+"""Number platform: a timed run ("boost") for boilers.
 
 Setting the number to N minutes turns the device ON with isdelay = N*60 s, so
 the device itself switches off after N minutes (OgeSPlugS216Model/ei.b.w:

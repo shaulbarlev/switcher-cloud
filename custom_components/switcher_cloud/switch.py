@@ -1,4 +1,4 @@
-"""Switch platform — power for every switchable family; per-gang for wall switches."""
+"""Switch platform: power for every switchable family, one per gang on wall switches."""
 from __future__ import annotations
 
 from typing import Any

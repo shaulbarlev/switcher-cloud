@@ -1,9 +1,9 @@
 """Device families: classification, command builders, WorkStatus parsers.
 
-Every entry here is reconstructed from the decompiled Switcher Smart Home 7.53
-app (com.ogemray.data.model.Oge*Model + ei/b.java builders). Only ON_WALL (S216)
-has been exercised against real hardware; the rest are byte-exact transcriptions
-of what the official app sends and must be treated as UNVERIFIED.
+Everything here was read out of the decompiled Switcher Smart Home 7.53 app
+(com.ogemray.data.model.Oge*Model and the ei/b.java builders). Only ON_WALL
+(S216) has been run against real hardware. The rest match what the app sends,
+byte for byte, but have not been tested on a device.
 
 Common cloud control body (businessCode 0x0201), from p5.r():
     DID u32 | uid u32 | native-AES(pwd)[32] | sub-op u8 | len u16 | args...
@@ -21,14 +21,14 @@ from enum import Enum
 
 
 class Family(str, Enum):
-    ON_WALL = "on_wall"            # OgeSPlugS216Model  (3/33)   VERIFIED
+    ON_WALL = "on_wall"            # OgeSPlugS216Model  (3/33), verified on hardware
     BATH_HEATER = "bath_heater"    # OgeBathHeaterModel (3/31)
     PLUG = "plug"                  # OgeSPlugModel      (3/11,15,23; 1/161,167,168)
     SWITCH = "switch"              # OgeSwitchModel     (other 1/x, 3/x) multi-gang
     CURTAIN = "curtain"            # OgeCurtainModel    (12/x)
     LIGHT = "light"                # OgeLightModel      (8/x)
     MIX = "mix"                    # OgeMixDeviceModel  (15/x) multi-line panels: plug/light lines + runner lines
-    AIRCON = "aircon"              # OgeAirConditionModel (14/x) — not supported
+    AIRCON = "aircon"              # OgeAirConditionModel (14/x), not supported
     UNKNOWN = "unknown"
 
 
@@ -38,7 +38,7 @@ VERIFIED = {Family.ON_WALL}
 def classify(device_type: str) -> tuple[Family, int, int]:
     """Return (family, mainType, subType) for a 0x1343 DeviceType string.
     Mirrors OgeCommonDeviceModel.getNewInstance. (The Java 1/273 "socket" branch
-    is dead code — subType is a 2-hex-digit field, 273 = 0x111 is unreachable.)"""
+    is dead code: subType is a 2-hex-digit field, so 273 = 0x111 can never occur.)"""
     try:
         main, sub = int(device_type[0:2], 16), int(device_type[2:4], 16)
     except (ValueError, TypeError, IndexError):
@@ -77,9 +77,9 @@ def _head(did: int, uid: int, pwd_block: bytes, sub: int, length: int) -> bytear
 
 
 def body_onwall(did, uid, pwd_block, on: bool, isdelay: int = 0) -> bytes:
-    """ei/b.w(): sub 0x23 len 5: state u8, isdelay u32.  (48 B)  VERIFIED.
-    isdelay = **seconds** for a timed run (app UI a1/e2.java:437-456, 10 s
-    steps, ≤ autoclosingtime). 0 = plain on/off."""
+    """ei/b.w(): sub 0x23 len 5: state u8, isdelay u32. (48 B) Verified on hardware.
+    isdelay is a number of seconds for a timed run (app UI a1/e2.java:437-456,
+    10 s steps, at most autoclosingtime). 0 means a plain on/off."""
     b = _head(did, uid, pwd_block, 0x23, 5)
     b += bytes([1 if on else 0]) + struct.pack("<I", isdelay)
     return bytes(b)
@@ -97,10 +97,10 @@ def body_plug(did, uid, pwd_block, on: bool, line_no: int = 0, line_type: int = 
     """OgeSPlugModel.getControlCMD cloud forms (OgeSPlugModel.java:111-143):
        lineNo != 0 : sub 0x0A len 6: lineNo u8,   state u8, isdelay u32      (49 B)
        lineType!=0 : sub 0x0A len 6: lineType u8, state u8, autoclosing u32  (49 B)
-                     — autoclosing must ECHO the device's current value, or the
-                     command clears its auto-off.
+                     autoclosing has to echo the device's current value, otherwise
+                     the command wipes its auto-off.
     For lineNo==0 && lineType==0 the app uses a different body (sub 0x01 with a
-    PLAINTEXT pwd, AES-wrapped by key2_50, relation=DID) — see body_plug_single."""
+    plaintext pwd, AES-wrapped by key2_50, relation=DID). See body_plug_single."""
     b = _head(did, uid, pwd_block, 0x0A, 6)
     if line_no:
         b += bytes([line_no & 0xFF, 1 if on else 0]) + struct.pack("<I", isdelay)
@@ -111,8 +111,8 @@ def body_plug(did, uid, pwd_block, on: bool, line_no: int = 0, line_type: int = 
 
 def body_plug_single(did, uid, pwd_plain: str, on: bool, isdelay: int = 0) -> bytes:
     """OgeSPlugModel.getControlCMD lineNo==0 && lineType==0 (OgeSPlugModel.java:145-173),
-    identical in OgeSocketModel: 49 B PLAINTEXT body = DID u32, uid u32, pwd l(32)
-    (NOT native-AES), sub 0x01, len u16 6, state u16, isdelay u32.
+    identical in OgeSocketModel: 49 B plaintext body = DID u32, uid u32, pwd l(32)
+    (not the native AES block), sub 0x01, len u16 6, state u16, isdelay u32.
     On the cloud path the whole body is then AES-ECB'd with key2_50 (= BODY_KEY)
     and sent with control=0x0100 and relation_id = DID LE u32 + 00 00.
     Caller must send via SwitcherClient.send_control_single()."""
@@ -155,7 +155,7 @@ def body_curtain_position(did, uid, pwd_block, open_ratio: int, line_no: int = 0
 
 
 def body_light_toggle(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
-    """OgeLightModel sub 0x08 len 3: state u8 (1 = on, 2 = OFF — note 2, not 0), delay u16. (46 B)"""
+    """OgeLightModel sub 0x08 len 3: state u8 (1 = on, 2 = off; note off is 2, not 0), delay u16. (46 B)"""
     b = _head(did, uid, pwd_block, 0x08, 3)
     b += bytes([1 if on else 2]) + struct.pack("<H", delay & 0xFFFF)
     return bytes(b)
@@ -165,8 +165,9 @@ def body_light_toggle(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
 # RGBWT = five u16 LE, each 0..2048 (setRGB v*2048/255; setW/setT pct*2048/100;
 # getRGB v*255/2048; getW/getT v*101/2048). No flags/mode byte. specialWay =
 # effect: 0 none, 1 stream, 2 gradient, 3 breathe, 4 flashing, 7 colorful.
-# NOTE: this APK ships no colour-light UI (Switcher never sold one); layout is
-# from the model setters/getters, so W/T semantics and T direction are unverified.
+# This APK ships no colour-light UI at all (Switcher never sold one). The layout
+# comes from the model's setters and getters, so what W and T mean, and which
+# way T runs, is a best guess until someone tests a real light.
 LIGHT_FULL = 2048
 LIGHT_EFFECTS = {0: "none", 1: "stream", 2: "gradient", 3: "breathe", 4: "flashing", 7: "colorful"}
 

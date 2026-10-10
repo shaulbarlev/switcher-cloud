@@ -1,4 +1,4 @@
-"""Water-heater platform — boiler-type devices (On Wall, Bath heater)."""
+"""Water heater platform for boilers (On Wall, Bath heater)."""
 from __future__ import annotations
 
 from typing import Any
