@@ -19,15 +19,9 @@ It does not work for the On Wall boiler. The `aioswitcher` maintainers tried in 
 
 So this integration does what the app does. It logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the app. Every device on the account shows up, whether or not it has a local interface. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
 
+The protocol is reverse engineered from the Switcher Android app and follows its patterns.
+
 This is unofficial and not affiliated with Switcher.
-
-## How it was built
-
-I started from the Android app. Decompiling it (jadx for the Java, radare2 for the native library) gave almost the whole protocol: the AES keys, the frame layout, the CRC, the login body, the device list, the on/off command, the device password crypto. Then I pointed it at the real server and every login came back with error 12. Static analysis pointed at a device handshake that had to run first. I implemented it. Error 12 again.
-
-What broke the wall was a spare Android phone, PCAPdroid, and ten minutes of capturing the real app logging in and toggling the boiler. The diff was two bytes in the packet header: the login family uses protocol version 2.50, the rest uses 3.05, and the decompiler had hidden which constant fed which path. There was no handshake. The capture also settled five other things the decompile had wrong or left open. Half an hour later the boiler turned on from a Python script, and that evening from Home Assistant.
-
-After that it was the normal grind: a HACS integration modelled on ha-aux-cloud, four rounds of review (two on Home Assistant conventions, two reading the decompiled code line by line against mine), which found real bugs and also the run timer, which I had tested with a one second value and dismissed. Every other device family in this repo was transcribed from the app's code in that review pass. The auto shutdown setting came from a second capture of the app changing it, three values, which matched the transcription byte for byte. Nothing in here was guessed where a capture could settle it.
 
 ## Features
 
