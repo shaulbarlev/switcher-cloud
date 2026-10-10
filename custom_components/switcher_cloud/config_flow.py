@@ -38,6 +38,9 @@ class SwitcherCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     VERSION = 1
 
+    def __init__(self) -> None:
+        self._reauth_entry: config_entries.ConfigEntry | None = None
+
     async def async_step_user(self, user_input=None):
         errors = {}
         if user_input is not None:
@@ -62,6 +65,45 @@ class SwitcherCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
         return self.async_show_form(
             step_id="user", data_schema=STEP_USER_SCHEMA, errors=errors
+        )
+
+    async def async_step_reauth(self, entry_data):
+        """HA-initiated reauthentication after ConfigEntryAuthFailed."""
+        self._reauth_entry = self.hass.config_entries.async_get_entry(
+            self.context["entry_id"]
+        )
+        return await self.async_step_reauth_confirm()
+
+    async def async_step_reauth_confirm(self, user_input=None):
+        errors = {}
+        assert self._reauth_entry is not None
+        if user_input is not None:
+            data = {
+                **self._reauth_entry.data,
+                CONF_PASSWORD: user_input[CONF_PASSWORD],
+            }
+            try:
+                await validate_input(self.hass, data)
+            except CannotConnect:
+                errors["base"] = "cannot_connect"
+            except InvalidAuth:
+                errors["base"] = "invalid_auth"
+            except Exception:  # noqa: BLE001
+                _LOGGER.exception("unexpected error during reauth")
+                errors["base"] = "unknown"
+            else:
+                self.hass.config_entries.async_update_entry(
+                    self._reauth_entry, data=data)
+                await self.hass.config_entries.async_reload(
+                    self._reauth_entry.entry_id)
+                return self.async_abort(reason="reauth_successful")
+        return self.async_show_form(
+            step_id="reauth_confirm",
+            data_schema=vol.Schema({vol.Required(CONF_PASSWORD): str}),
+            errors=errors,
+            description_placeholders={
+                CONF_EMAIL: self._reauth_entry.data.get(CONF_ACCOUNT, "")
+            },
         )
 
 
