@@ -123,7 +123,7 @@ When a device is offline in the Switcher cloud its entities go unavailable.
 
 ## Contributing
 
-Issues and pull requests are welcome. Bug reports are most useful with the diagnostics download attached (Settings, Devices & services, Switcher Cloud, three dot menu, Download diagnostics). For an unverified device, a packet capture of the official app controlling it is what lets me confirm the bytes; [PCAPdroid](https://github.com/emanuele-f/PCAPdroid) on Android does that without root.
+Issues and pull requests are welcome. Bug reports are most useful with the diagnostics download attached. For an unverified device, a packet capture of the official app controlling it is what lets me confirm the bytes; [PCAPdroid](https://github.com/emanuele-f/PCAPdroid) on Android does that without root.
 
 The protocol code lives in `custom_components/switcher_cloud/devices.py`. Each builder and parser names the app class and method it came from, so a reviewer can check it against the decompiled source. Unit tests run with `python -m pytest tests` and need only Python and `pycryptodome`.
 
