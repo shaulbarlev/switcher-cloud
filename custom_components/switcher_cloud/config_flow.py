@@ -1,4 +1,4 @@
-"""Config flow for Switcher On Wall (cloud credentials)."""
+"""Config flow for Switcher Cloud (cloud credentials)."""
 from __future__ import annotations
 
 import logging
@@ -33,8 +33,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     return {"uid": client.uid}
 
 
-class SwitcherOnwallConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
-    """Handle a config flow for Switcher On Wall."""
+class SwitcherCloudConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
+    """Handle a config flow for Switcher Cloud."""
 
     VERSION = 1
 
@@ -54,7 +54,7 @@ class SwitcherOnwallConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 await self.async_set_unique_id(f"switcher_{info['uid']}")
                 self._abort_if_unique_id_configured()
                 return self.async_create_entry(
-                    title="Switcher On Wall",
+                    title="Switcher Cloud",
                     data={
                         CONF_ACCOUNT: user_input[CONF_EMAIL],
                         CONF_PASSWORD: user_input[CONF_PASSWORD],

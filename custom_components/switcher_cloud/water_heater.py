@@ -1,4 +1,4 @@
-"""Water-heater platform — the On Wall is a boiler."""
+"""Water-heater platform — boiler-type devices (On Wall etc.)."""
 from __future__ import annotations
 
 import asyncio
@@ -17,23 +17,26 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SwitcherOnwallCoordinator
+from .coordinator import SwitcherCloudCoordinator
 
 OPERATION_LIST = [STATE_ON, STATE_OFF]
+
+BOILER_DEVICE_TYPES = {"0321"}   # S216 / "On Wall" family
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    coordinator: SwitcherOnwallCoordinator = entry.runtime_data
+    coordinator: SwitcherCloudCoordinator = entry.runtime_data
     async_add_entities(
-        [SwitcherOnwallWaterHeater(coordinator, did)
-         for did in coordinator.data.keys()]
+        [SwitcherCloudWaterHeater(coordinator, did)
+         for did, st in coordinator.data.items()
+         if st.get("device_type") in BOILER_DEVICE_TYPES]
     )
 
 
-class SwitcherOnwallWaterHeater(
-    CoordinatorEntity[SwitcherOnwallCoordinator], WaterHeaterEntity
+class SwitcherCloudWaterHeater(
+    CoordinatorEntity[SwitcherCloudCoordinator], WaterHeaterEntity
 ):
     """Boiler as a water heater: operation on/off, no temp control (cloud API has none)."""
 
@@ -41,10 +44,10 @@ class SwitcherOnwallWaterHeater(
     _attr_supported_features = WaterHeaterEntityFeature.OPERATION_MODE
     _attr_name = None
 
-    def __init__(self, coordinator: SwitcherOnwallCoordinator, did: str) -> None:
+    def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator)
         self._did = did
-        self._attr_unique_id = f"switcher_onwall_{did}_heater"
+        self._attr_unique_id = f"switcher_cloud_{did}_heater"
         st = coordinator.data[did]
         self._attr_name = st.get("name") or f"Switcher {did}"
         self._attr_device_info = {

@@ -1,5 +1,5 @@
-"""Constants for the Switcher On Wall cloud integration."""
-DOMAIN = "switcher_onwall"
+"""Constants for the Switcher Cloud cloud integration."""
+DOMAIN = "switcher_cloud"
 PLATFORMS = ["switch", "water_heater", "sensor"]
 
 CONF_ACCOUNT = "account"

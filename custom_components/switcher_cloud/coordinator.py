@@ -1,4 +1,4 @@
-"""DataUpdateCoordinator for Switcher On Wall cloud."""
+"""DataUpdateCoordinator for Switcher Cloud cloud."""
 from __future__ import annotations
 
 import asyncio
@@ -17,7 +17,7 @@ from .const import DEFAULT_SCAN_INTERVAL, DOMAIN
 _LOGGER = logging.getLogger(__name__)
 
 
-class SwitcherOnwallCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
+class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]):
     """Polls the cloud for device list + WorkStatus.
 
     Data: {did_str: {name, on, secs_on, online, dmac, model, did_int, device_pwd}}
@@ -47,6 +47,7 @@ class SwitcherOnwallCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]]
             if not st:
                 continue
             st["did_int"] = int(dev["DID"])
+            st["device_type"] = str(dev.get("DeviceType", ""))
             try:
                 st["device_pwd"] = await asyncio.to_thread(
                     self.client.device_password, dev)

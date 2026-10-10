@@ -1,4 +1,4 @@
-"""Switcher On Wall cloud client — blocking TCP protocol, asyncio-wrapped.
+"""Switcher Cloud cloud client — blocking TCP protocol, asyncio-wrapped.
 
 Protocol (reverse-engineered from Switcher 7.53, verified by live capture 2026-10-10):
 - TCP to appserver.switcher.co.il:9091, fef0 frames, two-step CRC-CCITT.

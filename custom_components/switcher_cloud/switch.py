@@ -10,7 +10,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .coordinator import SwitcherOnwallCoordinator
+from .coordinator import SwitcherCloudCoordinator
 from .const import DOMAIN
 
 _LOGGER = logging.getLogger(__name__)
@@ -19,26 +19,26 @@ _LOGGER = logging.getLogger(__name__)
 async def async_setup_entry(
     hass: HomeAssistant, entry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    coordinator: SwitcherOnwallCoordinator = entry.runtime_data
+    coordinator: SwitcherCloudCoordinator = entry.runtime_data
 
     def known_dids():
         return set(coordinator.data.keys())
 
-    entities: list[SwitcherOnwallSwitch] = [
-        SwitcherOnwallSwitch(coordinator, did) for did in known_dids()
+    entities: list[SwitcherCloudSwitch] = [
+        SwitcherCloudSwitch(coordinator, did) for did in known_dids()
     ]
     async_add_entities(entities)
 
 
-class SwitcherOnwallSwitch(CoordinatorEntity[SwitcherOnwallCoordinator], SwitchEntity):
+class SwitcherCloudSwitch(CoordinatorEntity[SwitcherCloudCoordinator], SwitchEntity):
     """Boiler power switch, keyed on the cloud device id."""
 
     _attr_name = None
 
-    def __init__(self, coordinator: SwitcherOnwallCoordinator, did: str) -> None:
+    def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator)
         self._did = did
-        self._attr_unique_id = f"switcher_onwall_{did}_power"
+        self._attr_unique_id = f"switcher_cloud_{did}_power"
         st = coordinator.data[did]
         self._attr_name = st.get("name") or f"Switcher {did}"
         self._attr_device_info = {

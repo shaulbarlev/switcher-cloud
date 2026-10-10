@@ -9,21 +9,25 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .coordinator import SwitcherOnwallCoordinator
+from .coordinator import SwitcherCloudCoordinator
+
+
+BOILER_DEVICE_TYPES = {"0321"}   # S216 / "On Wall" family
 
 
 async def async_setup_entry(
     hass: HomeAssistant, entry, async_add_entities: AddConfigEntryEntitiesCallback
 ) -> None:
-    coordinator: SwitcherOnwallCoordinator = entry.runtime_data
+    coordinator: SwitcherCloudCoordinator = entry.runtime_data
     async_add_entities(
-        [SwitcherOnwallSecondsSensor(coordinator, did)
-         for did in coordinator.data.keys()]
+        [SwitcherCloudSecondsSensor(coordinator, did)
+         for did, st in coordinator.data.items()
+         if st.get("device_type") in BOILER_DEVICE_TYPES]
     )
 
 
-class SwitcherOnwallSecondsSensor(
-    CoordinatorEntity[SwitcherOnwallCoordinator], SensorEntity
+class SwitcherCloudSecondsSensor(
+    CoordinatorEntity[SwitcherCloudCoordinator], SensorEntity
 ):
     """Seconds the boiler has been on (resets at off)."""
 
@@ -32,10 +36,10 @@ class SwitcherOnwallSecondsSensor(
     _attr_translation_key = None
     _attr_name = "Time on"
 
-    def __init__(self, coordinator: SwitcherOnwallCoordinator, did: str) -> None:
+    def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator)
         self._did = did
-        self._attr_unique_id = f"switcher_onwall_{did}_secs_on"
+        self._attr_unique_id = f"switcher_cloud_{did}_secs_on"
         self._attr_device_info = {
             "identifiers": {(DOMAIN, did)},
             "name": (coordinator.data[did].get("name") or f"Switcher {did}"),
