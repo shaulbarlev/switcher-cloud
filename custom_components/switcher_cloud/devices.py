@@ -161,6 +161,59 @@ def body_light_toggle(did, uid, pwd_block, on: bool, delay: int = 0) -> bytes:
     return bytes(b)
 
 
+# ---- parameter writes (businessCode 0x0E01, ei/b.z via OgeCommonDeviceModel.getWriteParamsCMD) ----
+PARAM_AUTO_SHUTDOWN = 0x0C14     # 3092: S216 auto-shutdown limit in seconds (ag/z1.java:219-225, vf/o0 case 8)
+AUTO_SHUTDOWN_MIN = 3660         # app clamps 1..3659 up to 3660 (61 min); 0 = unlimited
+
+
+def body_write_params(did, uid, pwd_block, params: dict[int, bytes]) -> bytes:
+    """ei/b.z(): DID u32, uid u32, pwd[32], count u16, ids[] u16, lens[] u16, values.
+    Sent as businessCode 0x0E01 (3585), plaintext body like 0x0201."""
+    b = bytearray(struct.pack("<II", did, uid)) + pwd_block
+    b += struct.pack("<H", len(params))
+    for pid in params:
+        b += struct.pack("<H", pid)
+    for v in params.values():
+        b += struct.pack("<H", len(v))
+    for v in params.values():
+        b += v
+    return bytes(b)
+
+
+def body_auto_shutdown(did, uid, pwd_block, seconds: int) -> bytes:
+    """Set the S216 auto-shutdown limit. 0 = unlimited; otherwise at least 3660 s.
+    Capture-verified 2026-10-10: 0x0E01 body tail `0100 140c 0400 <i32 LE>`."""
+    s = 0 if seconds <= 0 else max(AUTO_SHUTDOWN_MIN, int(seconds))
+    return body_write_params(did, uid, pwd_block, {PARAM_AUTO_SHUTDOWN: struct.pack("<i", s)})
+
+
+def body_read_params(did, uid, pwd_block, ids: list[int]) -> bytes:
+    """0x0E02 parameter read (capture-verified): DID, uid, pwd[32], count u16, ids[] u16.
+    The ack is empty; the value comes in a following 0x0103 push whose inner cmd is
+    0x0E02 and payload = count u16, id u16, len u16, value."""
+    b = bytearray(struct.pack("<II", did, uid)) + pwd_block + struct.pack("<H", len(ids))
+    for pid in ids:
+        b += struct.pack("<H", pid)
+    return bytes(b)
+
+
+def parse_params_payload(payload: bytes) -> dict[int, bytes]:
+    """Decode a 0x0E02 push payload: count u16, then per-param id u16, len u16, value."""
+    out: dict[int, bytes] = {}
+    if len(payload) < 2:
+        return out
+    n = struct.unpack_from("<H", payload, 0)[0]
+    o = 2
+    for _ in range(n):
+        if o + 4 > len(payload):
+            break
+        pid, ln = struct.unpack_from("<HH", payload, o)
+        o += 4
+        out[pid] = payload[o:o + ln]
+        o += ln
+    return out
+
+
 # ---- light colour (OgeLightModel.getControlCMD sub 0x01, 55 B) ------------------
 # RGBWT = five u16 LE, each 0..2048 (setRGB v*2048/255; setW/setT pct*2048/100;
 # getRGB v*255/2048; getW/getT v*101/2048). No flags/mode byte. specialWay =

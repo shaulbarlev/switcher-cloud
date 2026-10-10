@@ -49,7 +49,8 @@
       }
     },
     "number": {
-      "run_timer": { "name": "Run timer" }
+      "run_timer": { "name": "Run timer" },
+      "auto_shutdown": { "name": "Auto shutdown" }
     }
   },
   "exceptions": {

@@ -24,7 +24,7 @@ This is unofficial and not affiliated with Switcher.
 ## Features
 
 - Every device with on/off gets a switch. Multi-gang wall switches get one per gang.
-- Boilers (On Wall, Bath heater) also get a water heater entity and a run timer in minutes. Set the timer and the device turns itself off when the time is up, which still works if Home Assistant goes down halfway through.
+- Boilers (On Wall, Bath heater) also get a water heater entity, a run timer and the auto shutdown setting. The run timer is in minutes: set it and the device turns itself off when the time is up, which still works if Home Assistant goes down halfway through. Auto shutdown is the same limit you see in the app, read from the device and written back to it.
 - Runner shutters get a cover with open, close, stop and set position.
 - Lights get brightness, RGB, colour temperature and effects.
 - Current, energy and time-on sensors, where the device reports them.
@@ -100,6 +100,7 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `switch` | all controllable families | Main on/off. One per gang on wall switches, one per plug line on mix panels. |
 | `water_heater` | On Wall, Bath heater | Shows On / Off. No temperature, the cloud does not report one. |
 | `number` "Run timer" | On Wall, Bath heater | Minutes, slider 0 to 180 in steps of 5. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. The device does not report the remaining time, so the number shows the requested value until the device turns off. The device may clamp the value to its own maximum. |
+| `number` "Auto shutdown" | On Wall, Bath heater | The device's own auto-shutdown limit in minutes, the same setting as in the app. Read from the device every poll. 0 means unlimited; values from 1 to 60 are raised to 61 by the device. |
 | `sensor` "Current" | energy-reporting families | Amperes. The device reports a raw value and the app divides by 220, so this follows the same convention. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. |
 | `sensor` "Time on" | energy-reporting families | Seconds the device has been on in the current session. |

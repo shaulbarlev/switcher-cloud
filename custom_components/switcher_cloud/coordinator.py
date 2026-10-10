@@ -15,6 +15,7 @@ from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
 from .const import CONF_ACCOUNT, CONF_PASSWORD, DEFAULT_SCAN_INTERVAL, DOMAIN
 from .devices import (
     Family,
+    body_auto_shutdown,
     body_bath_heater,
     body_light_toggle,
     body_onwall,
@@ -138,6 +139,22 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                                          translation_placeholders={"family": fam.value})
             await self._send_and_confirm(did, body, lambda s: self._gang_state(s, gang) == on,
                                          single_did=single)
+
+    async def async_set_auto_shutdown(self, did: str, seconds: int) -> None:
+        """Set the device's auto-shutdown limit (S216 parameter 0x0C14, 0x0E01 write)."""
+        async with self._command_locks.setdefault(did, asyncio.Lock()):
+            st = (self.data or {}).get(did)
+            if st is None:
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="device_unavailable")
+            body = body_auto_shutdown(st["did_int"], self.client.uid,
+                                      self.client.pwd_block(st.get("device_pwd") or ""), seconds)
+            try:
+                await self.hass.async_add_executor_job(self.client.send_write_params, body)
+            except SwitcherAuthError as err:
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="invalid_auth") from err
+            except Exception as err:  # noqa: BLE001
+                raise HomeAssistantError(translation_domain=DOMAIN, translation_key="command_failed",
+                                         translation_placeholders={"error": str(err)}) from err
 
     async def async_control(self, did: str, body: bytes, done=None) -> None:
         """Generic control (covers, lights): send + confirm via `done(state)`."""

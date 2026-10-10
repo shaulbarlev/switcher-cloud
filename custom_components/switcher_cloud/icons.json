@@ -1,7 +1,8 @@
 {
   "entity": {
     "number": {
-      "run_timer": { "default": "mdi:timer-play-outline" }
+      "run_timer": { "default": "mdi:timer-play-outline" },
+      "auto_shutdown": { "default": "mdi:timer-off-outline" }
     },
     "sensor": {
       "current": { "default": "mdi:current-ac" },

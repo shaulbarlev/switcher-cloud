@@ -131,3 +131,19 @@ def test_push_parse_offsets():
     body = struct.pack("<HHIBH", 0x0201, 46193, 1791644867, 0, 3) + b"\x23\x00\x00"
     p = api.parse_push(body)
     assert p["cmd"] == 0x0201 and p["status"] == 0 and p["payload"] == b"\x23\x00\x00"
+
+
+def test_auto_shutdown_write_matches_capture():
+    # captured 0x0E01 tail when the app set 2 h: count=1, id=0x0C14, len=4, 7200
+    body = devices.body_auto_shutdown(1, 2, b"\x00" * 32, 7200)
+    assert body[40:] == bytes.fromhex("0100140c0400201c0000")
+    # 1..3659 s is raised to 3660 (1 h 1 m), 0 stays 0
+    assert devices.body_auto_shutdown(1, 2, b"\x00" * 32, 600)[46:50] == struct.pack("<i", 3660)
+    assert devices.body_auto_shutdown(1, 2, b"\x00" * 32, 0)[46:50] == b"\x00\x00\x00\x00"
+
+
+def test_auto_shutdown_read_and_push_payload():
+    body = devices.body_read_params(1, 2, b"\x00" * 32, [devices.PARAM_AUTO_SHUTDOWN])
+    assert body[40:] == bytes.fromhex("0100140c")                       # captured 0x0E02 tail
+    vals = devices.parse_params_payload(bytes.fromhex("0100140c0400c0120000"))  # captured push
+    assert struct.unpack("<i", vals[devices.PARAM_AUTO_SHUTDOWN])[0] == 4800

@@ -195,6 +195,7 @@ class SwitcherClient:
         self.comm_key = b"\x00" * 32
         self._send_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
+        self._param_waiters: dict[int, queue.Queue] = {}
         self.auth_error: SwitcherAuthError | None = None
         self._warned_types: set = set()
         self._listener: threading.Thread | None = None
@@ -345,7 +346,13 @@ class SwitcherClient:
                     self._on_push(push)
                 except Exception:  # noqa: BLE001
                     _LOGGER.exception("push callback failed")
-            return                                     # pushes never resolve requests
+            # a 0x0E02 param read answers through this push; hand it to the waiter
+            if push and push["cmd"] == 0x0E02:
+                w = self._param_waiters.get(push["serial"])
+                if w is not None:
+                    with contextlib.suppress(queue.Full):
+                        w.put_nowait(push)
+            return                                     # other pushes never resolve requests
         q = self._pending.get(p["serial"])             # replies matched by serial
         if q is not None:
             with contextlib.suppress(queue.Full):
@@ -411,8 +418,10 @@ class SwitcherClient:
         return data.get("DevList") or data.get("devList") or []
 
     def poll(self) -> dict[str, dict[str, Any]]:
-        """One executor job: device list + per-device state + decrypted pwd.
+        """One executor job: device list + per-device state + decrypted pwd,
+        plus the auto-shutdown limit for boilers (0x0E02 read, like the app).
         A malformed row is logged once and skipped, never kills the poll."""
+        from .devices import PARAM_AUTO_SHUTDOWN, BOILER_FAMILIES, Family, body_read_params
         out: dict[str, dict[str, Any]] = {}
         for dev in self.get_devices():
             try:
@@ -427,6 +436,16 @@ class SwitcherClient:
                 st["device_pwd"] = self.device_password(dev)
             except Exception:  # noqa: BLE001 - pwd decrypt must not kill the poll
                 st["device_pwd"] = None
+            if Family(st["family"]) in BOILER_FAMILIES and st["device_pwd"] and st.get("online"):
+                try:
+                    vals = self.read_params(body_read_params(
+                        st["did_int"], self.uid, _b_c_encrypt(st["device_pwd"]),
+                        [PARAM_AUTO_SHUTDOWN]))
+                    raw = vals.get(PARAM_AUTO_SHUTDOWN)
+                    if raw and len(raw) >= 4:
+                        st["auto_shutdown_s"] = struct.unpack_from("<i", raw, 0)[0]
+                except Exception as err:  # noqa: BLE001 - optional field
+                    _LOGGER.debug("auto-shutdown read failed: %s", err)
             out[self.state_key(dev)] = st
         return out
 
@@ -448,6 +467,44 @@ class SwitcherClient:
                          relation_id=struct.pack("<I", did).ljust(6, b"\x00"))
         if p["errcode"] != 0:
             raise SwitcherApiError(f"control errcode={p['errcode']}")
+
+    def send_write_params(self, body: bytes) -> None:
+        """Parameter write, businessCode 0x0E01 (ei/b.z, OgeCommonDeviceModel.getWriteParamsCMD).
+        Same framing as 0x0201: plaintext body, pwd block pre-encrypted."""
+        p = self.request(0x0E01, body, encrypted=False)
+        if p["errcode"] != 0:
+            raise SwitcherApiError(f"write params errcode={p['errcode']}")
+
+    def read_params(self, body: bytes, timeout: float = 10) -> dict[int, bytes]:
+        """Parameter read, businessCode 0x0E02. The direct reply is an empty ack;
+        the values arrive in a 0x0103 push whose inner cmd is 0x0E02 and whose
+        inner serial equals the serial we sent (capture-verified 2026-10-10)."""
+        from .devices import parse_params_payload
+        if self._listener is None or not self._listener.is_alive():
+            self.start_listener()
+        deadline = time.time() + timeout
+        while self._sock is None and time.time() < deadline:
+            time.sleep(0.2)
+        q: queue.Queue = queue.Queue(maxsize=2)
+        with self._send_lock:
+            serial = self._raw_send(0x0E02, body, encrypted=False)
+            self._pending[serial] = q
+            self._param_waiters[serial] = q
+        try:
+            ack = q.get(timeout=max(1, deadline - time.time()))
+            if isinstance(ack, Exception):
+                raise ack
+            if ack.get("errcode", 0) != 0:
+                raise SwitcherApiError(f"read params errcode={ack['errcode']}")
+            push = q.get(timeout=max(1, deadline - time.time()))
+            if isinstance(push, Exception):
+                raise push
+            return parse_params_payload(push["payload"])
+        except queue.Empty:
+            raise SwitcherApiError("timeout waiting for 0x0E02 push") from None
+        finally:
+            self._pending.pop(serial, None)
+            self._param_waiters.pop(serial, None)
 
     def pwd_block(self, device_pwd: str) -> bytes:
         return _b_c_encrypt(device_pwd)
