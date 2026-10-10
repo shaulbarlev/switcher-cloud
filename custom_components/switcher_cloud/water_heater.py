@@ -21,7 +21,7 @@ from .coordinator import SwitcherCloudCoordinator
 
 OPERATION_LIST = [STATE_ON, STATE_OFF]
 
-BOILER_DEVICE_TYPES = {"0321"}   # S216 / "On Wall" family
+from .devices import BOILER_FAMILIES, Family
 
 
 async def async_setup_entry(
@@ -31,7 +31,7 @@ async def async_setup_entry(
     async_add_entities(
         [SwitcherCloudWaterHeater(coordinator, did)
          for did, st in coordinator.data.items()
-         if st.get("device_type") in BOILER_DEVICE_TYPES]
+         if Family(st.get("family", "unknown")) in BOILER_FAMILIES]
     )
 
 

@@ -19,7 +19,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import DOMAIN
 from .coordinator import SwitcherCloudCoordinator
 
-BOILER_DEVICE_TYPES = {"0321"}   # S216 / "On Wall" family
+from .devices import ENERGY_FAMILIES, Family
 
 
 async def async_setup_entry(
@@ -29,7 +29,7 @@ async def async_setup_entry(
     async_add_entities(
         ent
         for did, st in coordinator.data.items()
-        if st.get("device_type") in BOILER_DEVICE_TYPES
+        if Family(st.get("family", "unknown")) in ENERGY_FAMILIES
         for ent in (
             SwitcherCloudSecondsSensor(coordinator, did),
             SwitcherCloudPowerSensor(coordinator, did),

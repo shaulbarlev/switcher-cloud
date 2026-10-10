@@ -12,3 +12,5 @@ onwall/
 spec/
 .venv/
 .DS_Store
+__pycache__/
+*.pyc

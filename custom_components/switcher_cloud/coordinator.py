@@ -84,30 +84,64 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         await asyncio.sleep(4)
         await self.async_request_refresh()
 
-    async def async_set_switch(self, did: str, on: bool) -> None:
+    async def async_set_switch(self, did: str, on: bool, gang: int | None = None) -> None:
         """Confirmed (non-optimistic) command: send, wait for the cloud ack,
         then poll until the device reports the new state. The UI only flips
-        once the boiler has actually changed — a visible 'on' means it worked."""
+        once the device has actually changed — a visible 'on' means it worked.
+        `gang` selects a line on multi-gang wall switches (0/None = all)."""
+        from .devices import (Family, body_bath_heater, body_light_toggle,
+                              body_onwall, body_plug, body_switch)
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             st = (self.data or {}).get(did)
             if st is None:
                 raise UpdateFailed("device no longer available")
-            try:
-                await asyncio.to_thread(
-                    self.client.set_switch, st["did_int"], st["device_pwd"], on)
-            except SwitcherAuthError as err:
-                raise ConfigEntryAuthFailed(str(err)) from err
-            except (SwitcherApiError, OSError, Exception) as err:  # noqa: BLE001
-                raise HomeAssistantError(str(err)) from err
-            # confirm: poll quickly (every 0.5 s) until the device reports the
-            # requested state, giving up after 30 s and letting the regular
-            # poll/push catch up.
-            deadline = self.hass.loop.time() + 30
-            while self.hass.loop.time() < deadline:
-                await asyncio.sleep(0.5)
-                await self.async_refresh()     # direct, not debounced
-                if (self.data or {}).get(did, {}).get("on") == on:
-                    break
+            fam = Family(st.get("family", "unknown"))
+            pwd = self.client.pwd_block(st["device_pwd"] or "")
+            uid = self.client.uid
+            d = st["did_int"]
+            if fam is Family.ON_WALL:
+                body = body_onwall(d, uid, pwd, on)
+            elif fam is Family.BATH_HEATER:
+                body = body_bath_heater(d, uid, pwd, on)
+            elif fam in (Family.PLUG, Family.SOCKET):
+                body = body_plug(d, uid, pwd, on, st.get("line_no", 0), st.get("line_type", 0))
+            elif fam is Family.SWITCH:
+                body = body_switch(d, uid, pwd, gang or 0, on)
+            elif fam is Family.LIGHT:
+                body = body_light_toggle(d, uid, pwd, on)
+            else:
+                raise HomeAssistantError(f"{fam.value}: on/off not supported")
+            await self._send_and_confirm(did, body, lambda s: self._gang_state(s, gang) == on)
+
+    async def async_control(self, did: str, body: bytes, done=None) -> None:
+        """Generic control (covers etc.): send + confirm via `done(state)` or just refresh."""
+        async with self._command_locks.setdefault(did, asyncio.Lock()):
+            await self._send_and_confirm(did, body, done)
+
+    @staticmethod
+    def _gang_state(st: dict, gang: int | None) -> bool | None:
+        if gang and st.get("gangs"):
+            g = st["gangs"]
+            return g[gang] if gang < len(g) else None
+        return st.get("on")
+
+    async def _send_and_confirm(self, did: str, body: bytes, done) -> None:
+        try:
+            await asyncio.to_thread(self.client.send_control, body)
+        except SwitcherAuthError as err:
+            raise ConfigEntryAuthFailed(str(err)) from err
+        except (SwitcherApiError, OSError, Exception) as err:  # noqa: BLE001
+            raise HomeAssistantError(str(err)) from err
+        # confirm: poll quickly (every 0.5 s) until the device reports the
+        # requested state, giving up after 30 s and letting the regular
+        # poll/push catch up.
+        deadline = self.hass.loop.time() + 30
+        while self.hass.loop.time() < deadline:
+            await asyncio.sleep(0.5)
+            await self.async_refresh()     # direct, not debounced
+            st = (self.data or {}).get(did, {})
+            if done is None or done(st):
+                break
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:

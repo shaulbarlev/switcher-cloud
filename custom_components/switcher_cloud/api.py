@@ -377,28 +377,38 @@ class SwitcherClient:
     def device_password(self, device: dict[str, Any]) -> str:
         return _b_a_decrypt(base64.b64decode(device["VisitPwd"]), self.comm_key)
 
-    def set_switch(self, device_id: int, device_pwd: str, on: bool) -> None:
-        b = bytearray(48)
-        struct.pack_into("<I", b, 0, device_id)
-        struct.pack_into("<I", b, 4, self.uid)
-        b[8:40] = _b_c_encrypt(device_pwd)
-        b[40] = 0x23
-        struct.pack_into("<H", b, 41, 5)
-        b[43] = 1 if on else 0
-        struct.pack_into("<I", b, 44, 0)
-        # control body is sent PLAINTEXT (live capture); only the embedded
-        # pwd block is pre-encrypted with the native key
-        p = self.request(0x0201, bytes(b), encrypted=False)
+    def send_control(self, body: bytes) -> None:
+        """Send one pre-built 0x0201 control body (plaintext; pwd block inside
+        is already native-encrypted) and require errcode 0."""
+        p = self.request(0x0201, body, encrypted=False)
         if p["errcode"] != 0:
             raise SwitcherApiError(f"control errcode={p['errcode']}")
 
+    def pwd_block(self, device_pwd: str) -> bytes:
+        return _b_c_encrypt(device_pwd)
+
+    def set_switch(self, device_id: int, device_pwd: str, on: bool) -> None:
+        """On Wall / S216 on-off (kept for backwards compat; see devices.py)."""
+        from .devices import body_onwall
+        self.send_control(body_onwall(device_id, self.uid, _b_c_encrypt(device_pwd), on))
+
     @staticmethod
     def device_state(device: dict[str, Any]) -> dict:
+        from .devices import MODEL_NAMES, PARSERS, classify
+        fam, main, sub = classify(str(device.get("DeviceType", "")))
+        line_no = int(device.get("LineNo") or 0)
         ws = base64.b64decode(device.get("WorkStatus") or "")
-        st = parse_workstatus(ws)
+        parser = PARSERS.get(fam)
+        st = parser(ws, line_no).as_dict() if parser else {}
+        st["family"] = fam.value
+        st["main_type"] = main
+        st["sub_type"] = sub
+        st["line_no"] = line_no
+        st["line_type"] = int(device.get("LineType") or 0)
         st["name"] = device.get("DeviceName")
         st["did"] = device.get("DID")
         st["online"] = device.get("OnlineStatus") == 1
         st["dmac"] = device.get("DMAC")
-        st["model"] = f'S216 (fw {device.get("FirmwareVersion", "?")})'
+        st["model"] = f'{MODEL_NAMES.get(fam, "Unknown")} (fw {device.get("FirmwareVersion", "?")})'
+        st["workstatus_hex"] = ws.hex()
         return st

@@ -1,6 +1,6 @@
 """Constants for the Switcher Cloud cloud integration."""
 DOMAIN = "switcher_cloud"
-PLATFORMS = ["switch", "water_heater", "sensor"]
+PLATFORMS = ["switch", "water_heater", "sensor", "cover"]
 
 CONF_ACCOUNT = "account"
 CONF_PASSWORD = "password"
