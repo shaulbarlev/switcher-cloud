@@ -29,7 +29,8 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIRM_INTERVAL = 0.5     # s between confirm polls after a command
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
-ACTIVE_SCAN_INTERVAL = 5   # s while any boiler is on, so the countdown ticks (the app polls at 5 s)
+ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
+                           # re-syncs the countdown seed (the cloud updates it rarely)
 
 type SwitcherCloudConfigEntry = ConfigEntry["SwitcherCloudCoordinator"]
 
