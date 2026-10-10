@@ -200,7 +200,11 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
     # -- scheduled poll ------------------------------------------------------------
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
-            return await self.hass.async_add_executor_job(self.client.poll)
+            data = await self.hass.async_add_executor_job(self.client.poll)
+            if _LOGGER.isEnabledFor(logging.DEBUG):
+                for k, st in data.items():
+                    _LOGGER.debug("poll %s on=%s ws=%s", k, st.get("on"), st.get("workstatus_hex"))
+            return data
         except SwitcherAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001 - any transport/parse error = failed poll
