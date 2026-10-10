@@ -17,7 +17,7 @@ Home Assistant ships `switcher_kis`, which talks to Switcher devices directly ov
 
 It does not work for the On Wall boiler. The `aioswitcher` maintainers tried in [PR #847](https://github.com/TomerFi/aioswitcher/pull/847) (issue [aioswitcher #889](https://github.com/TomerFi/aioswitcher/issues/889)). Seems it is dependent on a Switcher firmware update with no ETA. I own one of these boilers, so I was stuck.
 
-So this integration does what the app does. It logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the app. Every device on the account shows up, whether or not it has a local interface. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
+So this logs in to the Switcher cloud with your app account and speaks the app's own binary protocol, which I reverse-engineered from the app. If a device of yours already works with `switcher_kis`, keep using that for it; local is faster and does not depend on Switcher's servers.
 
 The protocol is reverse engineered from the Switcher Android app and follows its patterns.
 
