@@ -7,20 +7,25 @@ aioswitcher / switcher_kis do not support (they cover local-UDP devices only).
 ## Features
 - Power **switch** for every switchable Switcher cloud device (per-gang for wall switches)
 - **Water heater** entity for boiler-type devices (On Wall, Bath heater)
+- **Run timer** (number, minutes) for boilers — the device turns itself off after N minutes, even if HA is down
 - **Cover** entity for Runner shutters (open / close / stop / position)
+- **Light** entity (on/off, brightness, RGB, colour temperature, effects) — beta
 - **Sensors**: current (A), energy (kWh), time-on (s) where the device reports them
+- Live updates: a persistent connection receives the cloud's push notifications
+- Re-authentication flow when the password changes
 - Diagnostics dump (Settings → Devices → ⋮ → Download diagnostics) for issue reports
 
 ## Device support
 
 | Switcher product | DeviceType | Status |
 |---|---|---|
-| On Wall boiler (S216) | `0321` | ✅ **Verified** on real hardware |
+| On Wall boiler (S216) | `0321` | ✅ **Verified** on real hardware (incl. run timer) |
 | Bath heater / Touch boiler | `031F` | 🟡 Beta — same command as On Wall, unverified |
 | Power plugs / Smart plug | `030B` `030F` `0317` `01A1` `01A7` `01A8` | 🟡 Beta — unverified |
 | Wall switches (multi-gang) | other `01xx` / `03xx` | 🟡 Beta — unverified, one switch per gang |
-| Runner shutters / curtains | `0Cxx` | 🟡 Beta — unverified |
-| Lights (on/off only) | `08xx` | 🟡 Beta — unverified; no brightness/colour yet |
+| Runner shutters / curtains | `0Cxx` | 🟡 Beta — unverified, position reported |
+| Mix panels (plug/light lines + runner lines) | `0Fxx` | 🟡 Beta — unverified, one entity per line |
+| Lights | `08xx` | 🟡 Beta — on/off high-confidence; colour/CT unverified (Switcher's app ships no colour UI) |
 | Breeze (AC / IR) | `0Exx` | ❌ Not supported |
 
 **Beta means:** the command bytes were transcribed from the official app's

@@ -145,15 +145,19 @@ def _parse_login_reply(body: bytes) -> dict:
 
 
 def parse_push(body: bytes) -> dict | None:
-    """0x0103 push body (live-captured): cmd u16, serial u16, ts u32,
-    then device-specific bytes (sub 0x23 = control ack)."""
-    if len(body) < 8:
+    """0x0103 push body (DataParser0x0103.java:23-40): inner cmd u16@0, inner
+    serial u16@2, ts u32@4, status u8@8 (0 or 3 = accepted), len u16@9,
+    payload@11..11+len. The app re-wraps payload as a reply packet for the
+    inner cmd (e.g. sub 0x23 ack = [0x23][result u8][u16])."""
+    if len(body) < 11:
         return None
+    ln = struct.unpack_from("<H", body, 9)[0]
     return {
         "cmd": struct.unpack_from("<H", body, 0)[0],
         "serial": struct.unpack_from("<H", body, 2)[0],
         "ts": struct.unpack_from("<I", body, 4)[0],
-        "payload": body[8:],
+        "status": body[8],
+        "payload": body[11:11 + ln],
     }
 
 
@@ -180,6 +184,9 @@ def parse_workstatus(b: bytes) -> dict:
 
 HEARTBEAT_INTERVAL = 25       # app: 0x1104 every ~10 s; we can be gentler
 PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
+# login errcodes that mean "credentials wrong" (app ReuestError strings:
+# 5 account not registered, 11 wrong password, 13 account error)
+AUTH_ERRCODES = {5, 11, 13}
 
 
 class SwitcherClient:
@@ -200,7 +207,8 @@ class SwitcherClient:
         self.uid = 0
         self.comm_key = b"\x00" * 32
         self._send_lock = threading.Lock()
-        self._pending: dict[int, queue.Queue[dict]] = {}
+        self._pending: dict[int, queue.Queue] = {}
+        self.auth_error: SwitcherAuthError | None = None
         self._listener: threading.Thread | None = None
         self._stopping = threading.Event()
         self._on_push = None                 # callable(dict) in caller's thread
@@ -231,15 +239,20 @@ class SwitcherClient:
         return hdr + rest
 
     def _raw_send(self, cmd: int, body: bytes, *, encrypted: bool = True,
-                  version: bytes = b"\x03\x05", control: int = 0) -> None:
+                  version: bytes = b"\x03\x05", control: int = 0,
+                  relation_id: bytes | None = None) -> int:
+        """Send one packet; returns the serial used (for reply matching)."""
         s = self._sock
         assert s is not None, "not connected"
         wire = _aes_enc(body) if encrypted else body
-        pkt = build_packet(cmd, wire, self._next_serial(), self.session,
+        serial = self._next_serial()
+        pkt = build_packet(cmd, wire, serial, self.session,
                            session_key=self.comm_key, control=control,
-                           relation_id=struct.pack("<I", self.uid).ljust(6, b"\x00"),
+                           relation_id=relation_id if relation_id is not None
+                           else struct.pack("<I", self.uid).ljust(6, b"\x00"),
                            timestamp=int(time.time()), version=version)
         s.sendall(pkt)
+        return serial
 
     def connect(self) -> None:
         """Open TCP + login (0x1102, version 2.50)."""
@@ -252,7 +265,11 @@ class SwitcherClient:
         p = parse_packet(self._recv_packet())
         if p["errcode"] != 0:
             self.close()
-            raise SwitcherAuthError(f"login errcode={p['errcode']}")
+            # only credential-class errcodes are auth failures; anything else
+            # (server-side 1xx errors, 6 "refresh", 12 pre-auth gate) is transient
+            if p["errcode"] in AUTH_ERRCODES:
+                raise SwitcherAuthError(f"login errcode={p['errcode']}")
+            raise SwitcherApiError(f"login errcode={p['errcode']}")
         info = _parse_login_reply(_aes_dec(p["body"]))
         self.session, self.uid, self.comm_key = (
             info["session"], info["uid"], info["comm_key"])
@@ -260,10 +277,10 @@ class SwitcherClient:
 
     def close(self) -> None:
         if self._sock:
-            try:
+            with contextlib.suppress(OSError):
+                self._sock.shutdown(socket.SHUT_RDWR)   # wake a blocked recv
+            with contextlib.suppress(OSError):
                 self._sock.close()
-            except OSError:
-                pass
             self._sock = None
 
     # -- listener thread (realtime channel) --------------------------------------
@@ -274,6 +291,7 @@ class SwitcherClient:
         if self._listener and self._listener.is_alive():
             return
         self._stopping.clear()
+        self.auth_error = None
         self._listener = threading.Thread(
             target=self._listener_loop, name="switcher-cloud-listener", daemon=True)
         self._listener.start()
@@ -298,8 +316,14 @@ class SwitcherClient:
                 p = parse_packet(self._recv_packet())
                 self._dispatch(p)
             except socket.timeout:
-                with contextlib.suppress(OSError):
+                with self._send_lock, contextlib.suppress(OSError):
                     self._raw_send(0x1104, b"")       # heartbeat on idle
+            except SwitcherAuthError as err:
+                # credentials rejected: stop retrying, surface to request()
+                self.auth_error = err
+                self.close()
+                self._fail_pending(err)
+                break
             except Exception as err:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
@@ -311,6 +335,11 @@ class SwitcherClient:
                 if self._stopping.wait(delay):
                     break
 
+    def _fail_pending(self, err: Exception) -> None:
+        for q in list(self._pending.values()):
+            with contextlib.suppress(queue.Full):
+                q.put_nowait(err)
+
     def _dispatch(self, p: dict) -> None:
         if p["cmd"] == PUSH_CMD:
             push = parse_push(p["body"])
@@ -319,41 +348,47 @@ class SwitcherClient:
                     self._on_push(push)
                 except Exception:  # noqa: BLE001
                     _LOGGER.exception("push callback failed")
-            # pushes also resolve any pending control command implicitly
-            q = self._pending.get(push["cmd"]) if push else None
-        else:
-            q = self._pending.get(p["cmd"])
-        if q is None:
-            q = self._pending.get(0)                  # catch-all slot
+            return                                     # pushes never resolve requests
+        q = self._pending.get(p["serial"])             # replies matched by serial
         if q is not None:
-            try:
+            with contextlib.suppress(queue.Full):
                 q.put_nowait(p)
-            except queue.Full:
-                with contextlib.suppress(queue.Empty):
-                    q.get_nowait()
-                    q.put_nowait(p)
 
     # -- request bridge ----------------------------------------------------------
     def request(self, cmd: int, body: bytes, *, encrypted: bool = True,
                 version: bytes = b"\x03\x05", control: int = 0,
+                relation_id: bytes | None = None,
                 timeout: float = 15) -> dict:
-        """Send one packet on the persistent connection and wait for its reply.
-        Reconnects once on failure."""
+        """Send one packet on the persistent connection and wait for ITS reply
+        (matched by serial). Reconnects on transport failure; raises
+        SwitcherAuthError if the listener hit a credential rejection."""
         if self._listener is None or not self._listener.is_alive():
+            if self.auth_error:
+                raise self.auth_error
             self.start_listener()
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if self.auth_error:
+                raise self.auth_error
             if self._sock is None:      # listener still connecting
                 time.sleep(0.2)
                 continue
-            q = self._pending.setdefault(cmd, queue.Queue(maxsize=8))
-            with contextlib.suppress(queue.Empty):
-                q.get_nowait()                        # drop stale replies
+            q: queue.Queue = queue.Queue(maxsize=2)
             try:
                 with self._send_lock:
-                    self._raw_send(cmd, body, encrypted=encrypted,
-                                   version=version, control=control)
-                return q.get(timeout=max(1, deadline - time.time()))
+                    serial = self._raw_send(cmd, body, encrypted=encrypted,
+                                            version=version, control=control,
+                                            relation_id=relation_id)
+                    self._pending[serial] = q
+                try:
+                    r = q.get(timeout=max(1, deadline - time.time()))
+                finally:
+                    self._pending.pop(serial, None)
+                if isinstance(r, Exception):
+                    raise r
+                return r
+            except SwitcherAuthError:
+                raise
             except (OSError, queue.Empty) as err:
                 self.close()
                 _LOGGER.debug("request 0x%04x failed (%s); reconnecting", cmd, err)
@@ -374,6 +409,18 @@ class SwitcherClient:
         data = json.loads(body[i:].decode("utf-8", "replace"))
         return data.get("DevList") or data.get("devList") or []
 
+    def poll(self) -> dict[str, dict[str, Any]]:
+        """One executor job: device list + per-device state + decrypted pwd."""
+        out: dict[str, dict[str, Any]] = {}
+        for dev in self.get_devices():
+            st = self.device_state(dev)
+            try:
+                st["device_pwd"] = self.device_password(dev)
+            except Exception:  # noqa: BLE001 - pwd decrypt must not kill the poll
+                st["device_pwd"] = None
+            out[self.state_key(dev)] = st
+        return out
+
     def device_password(self, device: dict[str, Any]) -> str:
         return _b_a_decrypt(base64.b64decode(device["VisitPwd"]), self.comm_key)
 
@@ -381,6 +428,15 @@ class SwitcherClient:
         """Send one pre-built 0x0201 control body (plaintext; pwd block inside
         is already native-encrypted) and require errcode 0."""
         p = self.request(0x0201, body, encrypted=False)
+        if p["errcode"] != 0:
+            raise SwitcherApiError(f"control errcode={p['errcode']}")
+
+    def send_control_single(self, did: int, body: bytes) -> None:
+        """Single-line plug/socket cloud path (OgeSPlugModel.java:145-173,
+        common/a.java:142-158, ei/a.java:109-137): the whole 49 B body is
+        AES-ECB'd with key2_50 (= BODY_KEY), control=0x0100, relation=DID."""
+        p = self.request(0x0201, body, encrypted=True, control=0x0100,
+                         relation_id=struct.pack("<I", did).ljust(6, b"\x00"))
         if p["errcode"] != 0:
             raise SwitcherApiError(f"control errcode={p['errcode']}")
 
@@ -393,22 +449,36 @@ class SwitcherClient:
         self.send_control(body_onwall(device_id, self.uid, _b_c_encrypt(device_pwd), on))
 
     @staticmethod
+    def state_key(device: dict[str, Any]) -> str:
+        """Coordinator key. Mix panels (main 15) emit one 0x1343 row per line
+        with the SAME DID (DataParser0x1343.java:62-70) → key by DID+line."""
+        did = str(device.get("DID"))
+        if str(device.get("DeviceType", ""))[:2].upper() == "0F":
+            return f"{did}_L{int(device.get('LineNo') or 0)}"
+        return did
+
+    @staticmethod
     def device_state(device: dict[str, Any]) -> dict:
         from .devices import MODEL_NAMES, PARSERS, classify
         fam, main, sub = classify(str(device.get("DeviceType", "")))
         line_no = int(device.get("LineNo") or 0)
+        line_type = int(device.get("LineType") or 0)
         ws = base64.b64decode(device.get("WorkStatus") or "")
         parser = PARSERS.get(fam)
-        st = parser(ws, line_no).as_dict() if parser else {}
+        st = parser(ws, line_no, line_type).as_dict() if parser else {}
         st["family"] = fam.value
         st["main_type"] = main
         st["sub_type"] = sub
+        st["device_type"] = str(device.get("DeviceType", ""))
+        st["did_int"] = int(device.get("DID") or 0)
         st["line_no"] = line_no
-        st["line_type"] = int(device.get("LineType") or 0)
+        st["line_type"] = line_type
         st["name"] = device.get("DeviceName")
         st["did"] = device.get("DID")
         st["online"] = device.get("OnlineStatus") == 1
         st["dmac"] = device.get("DMAC")
-        st["model"] = f'{MODEL_NAMES.get(fam, "Unknown")} (fw {device.get("FirmwareVersion", "?")})'
+        st["firmware"] = device.get("FirmwareVersion")
+        st["product_features"] = device.get("ProductFeatures")
+        st["model"] = MODEL_NAMES.get(fam, "Unknown")
         st["workstatus_hex"] = ws.hex()
         return st

@@ -3,9 +3,16 @@
     "step": {
       "user": {
         "title": "Switcher Cloud",
-        "description": "Log in with your Switcher Smart Home app account (email + password).",
+        "description": "Log in with your Switcher Smart Home app account.",
         "data": {
           "email": "Email",
+          "password": "Password"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Re-authenticate Switcher Cloud",
+        "description": "Enter the new password for {email}.",
+        "data": {
           "password": "Password"
         }
       }
@@ -17,7 +24,29 @@
     },
     "abort": {
       "already_configured": "This Switcher account is already configured",
-      "reauth_successful": "Re-authentication was successful"
+      "reauth_successful": "Re-authentication was successful",
+      "wrong_account": "The password belongs to a different Switcher account"
     }
+  },
+  "entity": {
+    "switch": {
+      "gang": { "name": "Switch {n}" }
+    },
+    "sensor": {
+      "current": { "name": "Current" },
+      "energy": { "name": "Energy" },
+      "time_on": { "name": "Time on" }
+    },
+    "water_heater": {
+      "boiler": { "name": "Water heater" }
+    },
+    "number": {
+      "run_timer": { "name": "Run timer" }
+    }
+  },
+  "exceptions": {
+    "device_unavailable": { "message": "The device is no longer in your Switcher account." },
+    "unsupported": { "message": "On/off is not supported for {family} devices yet." },
+    "command_failed": { "message": "The Switcher cloud rejected the command: {error}" }
   }
 }

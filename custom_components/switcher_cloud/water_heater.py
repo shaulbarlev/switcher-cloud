@@ -1,71 +1,61 @@
-"""Water-heater platform — boiler-type devices (On Wall etc.)."""
+"""Water-heater platform — boiler-type devices (On Wall, Bath heater)."""
 from __future__ import annotations
 
-import asyncio
 from typing import Any
 
 from homeassistant.components.water_heater import (
-    STATE_OFF,
-    STATE_ON,
+    STATE_ELECTRIC,
     WaterHeaterEntity,
     WaterHeaterEntityFeature,
 )
 from homeassistant.const import STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
-from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN
-from .coordinator import SwitcherCloudCoordinator
-
-OPERATION_LIST = [STATE_ON, STATE_OFF]
-
+from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import BOILER_FAMILIES, Family
+from .entity import SwitcherCloudEntity
+
+PARALLEL_UPDATES = 0
 
 
 async def async_setup_entry(
-    hass: HomeAssistant, entry, async_add_entities: AddConfigEntryEntitiesCallback
+    hass: HomeAssistant,
+    entry: SwitcherCloudConfigEntry,
+    async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    coordinator: SwitcherCloudCoordinator = entry.runtime_data
+    coordinator = entry.runtime_data
     async_add_entities(
-        [SwitcherCloudWaterHeater(coordinator, did)
-         for did, st in coordinator.data.items()
-         if Family(st.get("family", "unknown")) in BOILER_FAMILIES]
+        SwitcherCloudWaterHeater(coordinator, did)
+        for did, st in coordinator.data.items()
+        if Family(st.get("family", "unknown")) in BOILER_FAMILIES
     )
 
 
-class SwitcherCloudWaterHeater(
-    CoordinatorEntity[SwitcherCloudCoordinator], WaterHeaterEntity
-):
-    """Boiler as a water heater: operation on/off, no temp control (cloud API has none)."""
+class SwitcherCloudWaterHeater(SwitcherCloudEntity, WaterHeaterEntity):
+    """Boiler as a water heater: on/off only (the cloud API has no temperature)."""
 
-    _attr_operation_list = OPERATION_LIST
-    _attr_supported_features = WaterHeaterEntityFeature.OPERATION_MODE
-    _attr_temperature_unit = UnitOfTemperature.CELSIUS
-    _attr_min_temp = 30.0        # not settable via the cloud API; display only
-    _attr_max_temp = 75.0
-    _attr_name = None
+    _attr_translation_key = "boiler"
+    _attr_operation_list = [STATE_ELECTRIC, STATE_OFF]
+    _attr_supported_features = (
+        WaterHeaterEntityFeature.OPERATION_MODE | WaterHeaterEntityFeature.ON_OFF
+    )
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS   # required by the base class
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
-        super().__init__(coordinator)
-        self._did = did
+        super().__init__(coordinator, did)
         self._attr_unique_id = f"switcher_cloud_{did}_heater"
-        st = coordinator.data[did]
-        self._attr_name = st.get("name") or f"Switcher {did}"
-        self._attr_device_info = {
-            "identifiers": {(DOMAIN, did)},
-            "name": st.get("name") or f"Switcher {did}",
-            "manufacturer": "Switcher",
-            "model": st.get("model"),
-        }
 
     @property
     def current_operation(self) -> str | None:
-        st = self.coordinator.data.get(self._did)
-        if st is None:
-            return None
-        return STATE_ON if st.get("on") else STATE_OFF
+        on = self._st().get("on")
+        return None if on is None else (STATE_ELECTRIC if on else STATE_OFF)
 
     async def async_set_operation_mode(self, operation_mode: str) -> None:
-        await self.coordinator.async_set_switch(self._did, operation_mode == STATE_ON)
+        await self.coordinator.async_set_switch(self._did, operation_mode != STATE_OFF)
+
+    async def async_turn_on(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._did, True)
+
+    async def async_turn_off(self, **kwargs: Any) -> None:
+        await self.coordinator.async_set_switch(self._did, False)

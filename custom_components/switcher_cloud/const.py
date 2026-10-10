@@ -1,8 +1,17 @@
-"""Constants for the Switcher Cloud cloud integration."""
+"""Constants for the Switcher Cloud integration."""
+from homeassistant.const import Platform
+
 DOMAIN = "switcher_cloud"
-PLATFORMS = ["switch", "water_heater", "sensor", "cover"]
+PLATFORMS: list[Platform] = [
+    Platform.SWITCH,
+    Platform.WATER_HEATER,
+    Platform.SENSOR,
+    Platform.COVER,
+    Platform.LIGHT,
+    Platform.NUMBER,
+]
 
 CONF_ACCOUNT = "account"
 CONF_PASSWORD = "password"
 
-DEFAULT_SCAN_INTERVAL = 60  # seconds; vendor app polls every 5s, we are gentler
+DEFAULT_SCAN_INTERVAL = 60  # seconds; vendor app polls every 5 s, we are gentler
