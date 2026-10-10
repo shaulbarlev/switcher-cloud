@@ -66,6 +66,11 @@ class SwitcherCloudSwitch(SwitcherCloudEntity, SwitchEntity):
         on = st.get("on")
         return None if on is None else bool(on)
 
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        # raw device status, for bug reports on unverified families
+        return {"work_status": self._st().get("workstatus_hex")}
+
     async def async_turn_on(self, **kwargs: Any) -> None:
         await self.coordinator.async_set_switch(self._did, True, self._gang)
 
