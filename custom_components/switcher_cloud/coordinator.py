@@ -85,34 +85,28 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         await self.async_request_refresh()
 
     async def async_set_switch(self, did: str, on: bool) -> None:
-        """Optimistic command transaction (pattern from ha-aux-cloud): publish
-        the requested value immediately, roll back on failure, then let a
-        delayed authoritative poll reconcile (the cloud list can lag)."""
+        """Confirmed (non-optimistic) command: send, wait for the cloud ack,
+        then poll until the device reports the new state. The UI only flips
+        once the boiler has actually changed — a visible 'on' means it worked."""
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             st = (self.data or {}).get(did)
             if st is None:
                 raise UpdateFailed("device no longer available")
-            prev = st.get("on")
-            if prev != on:
-                st["on"] = on
-                self.async_update_listeners()
             try:
                 await asyncio.to_thread(
                     self.client.set_switch, st["did_int"], st["device_pwd"], on)
+            except SwitcherAuthError as err:
+                raise ConfigEntryAuthFailed(str(err)) from err
             except (SwitcherApiError, OSError, Exception) as err:  # noqa: BLE001
-                if (self.data or {}).get(did, {}).get("on") == on:
-                    self.data[did]["on"] = prev
-                    self.async_update_listeners()
-                if isinstance(err, SwitcherAuthError):
-                    raise ConfigEntryAuthFailed(str(err)) from err
                 raise HomeAssistantError(str(err)) from err
-            # authoritative reconcile shortly after (cloud WorkStatus lags)
-            self.config_entry.async_create_task(
-                self.hass, self._delayed_reconcile(), "switcher_cloud_reconcile")
-
-    async def _delayed_reconcile(self) -> None:
-        await asyncio.sleep(6)
-        await self.async_request_refresh()
+            # confirm: the cloud device list lags the ack by ~1-5 s; poll a few
+            # times until it reflects the requested state (or give up quietly
+            # and let the regular poll/push catch up).
+            for _ in range(6):
+                await asyncio.sleep(1.5)
+                await self.async_request_refresh()
+                if (self.data or {}).get(did, {}).get("on") == on:
+                    break
 
     async def _async_update_data(self) -> dict[str, dict[str, Any]]:
         try:
