@@ -10,7 +10,7 @@ from homeassistant.components.water_heater import (
     WaterHeaterEntity,
     WaterHeaterEntityFeature,
 )
-from homeassistant.const import STATE_OFF
+from homeassistant.const import STATE_OFF, UnitOfTemperature
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -42,6 +42,9 @@ class SwitcherCloudWaterHeater(
 
     _attr_operation_list = OPERATION_LIST
     _attr_supported_features = WaterHeaterEntityFeature.OPERATION_MODE
+    _attr_temperature_unit = UnitOfTemperature.CELSIUS
+    _attr_min_temp = 30.0        # not settable via the cloud API; display only
+    _attr_max_temp = 75.0
     _attr_name = None
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
