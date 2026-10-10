@@ -343,6 +343,9 @@ class SwitcherClient:
             self.start_listener()
         deadline = time.time() + timeout
         while time.time() < deadline:
+            if self._sock is None:      # listener still connecting
+                time.sleep(0.2)
+                continue
             q = self._pending.setdefault(cmd, queue.Queue(maxsize=8))
             with contextlib.suppress(queue.Empty):
                 q.get_nowait()                        # drop stale replies
