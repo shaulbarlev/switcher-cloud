@@ -40,7 +40,6 @@
     "sensor": {
       "current": { "name": "Current" },
       "energy": { "name": "Energy" },
-      "time_on": { "name": "Time on" },
       "time_remaining": { "name": "Time remaining" }
     },
     "water_heater": {

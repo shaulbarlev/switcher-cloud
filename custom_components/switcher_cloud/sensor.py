@@ -1,4 +1,4 @@
-"""Sensor platform: current, energy and time-on from WorkStatus, for families that report them."""
+"""Sensor platform: current, energy and time remaining from WorkStatus, for families that report them."""
 from __future__ import annotations
 
 from collections.abc import Callable
@@ -51,25 +51,15 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         present=lambda st: st.get("energy_kwh") is not None,
     ),
     SwitcherSensorDescription(
-        key="time_on",
-        translation_key="time_on",
-        device_class=SensorDeviceClass.DURATION,
-        state_class=SensorStateClass.MEASUREMENT,   # per-session counter, resets
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        value_fn=lambda st: st.get("secs_on"),
-        present=lambda st: st.get("secs_on") is not None,
-    ),
-    SwitcherSensorDescription(
         key="time_remaining",
         translation_key="time_remaining",
         device_class=SensorDeviceClass.DURATION,
         state_class=SensorStateClass.MEASUREMENT,
         native_unit_of_measurement=UnitOfTime.SECONDS,
-        # WorkStatus lasttime: the device's own countdown to auto-off while on,
-        # the same number the app shows on the boiler screen (yf/m1.java:348).
-        # Zero when the device is off.
-        value_fn=lambda st: (st.get("lasttime") or 0) if st.get("on") else 0,
-        present=lambda st: st.get("lasttime") is not None,
+        # WorkStatus u16@21: seconds until the device switches itself off.
+        # The device keeps the last value while off, so report 0 then.
+        value_fn=lambda st: (st.get("remaining") or 0) if st.get("on") else 0,
+        present=lambda st: st.get("remaining") is not None,
     ),
 )
 
@@ -97,8 +87,7 @@ class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
         super().__init__(coordinator, did)
         self.entity_description = desc
         # keep the pre-existing unique ids so registry entries survive
-        legacy = {"current": "power", "energy": "energy", "time_on": "secs_on",
-                  "time_remaining": "time_remaining"}[desc.key]
+        legacy = {"current": "power", "energy": "energy", "time_remaining": "time_remaining"}[desc.key]
         self._attr_unique_id = f"switcher_cloud_{did}_{legacy}"
 
     @property

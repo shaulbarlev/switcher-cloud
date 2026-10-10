@@ -52,7 +52,14 @@ def test_onwall_parse_on_off():
     on = devices.parse_onwall(WS_ON)
     assert on.on is True and on.power_raw == 2627
     off = devices.parse_onwall(WS_OFF)
-    assert off.on is False and off.power_raw == 0 and off.secs_on == 0
+    assert off.on is False and off.power_raw == 0
+
+
+def test_onwall_remaining_from_live_bytes():
+    # sampled 20 s into a 180 s run: remaining u16@21 = 179, isdelay u8@25 = 1
+    b = bytes.fromhex("0201000000000000006e0a00000000000000000000b300000001000000000000")
+    st = devices.parse_onwall(b)
+    assert st.on and st.remaining == 179 and st.isdelay == 1 and st.power_raw == 2670
 
 
 def test_classify():

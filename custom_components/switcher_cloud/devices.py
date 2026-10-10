@@ -252,6 +252,7 @@ class State:
     power_raw: int | None = None       # /220 → A (vendor convention)
     energy_kwh: float | None = None
     secs_on: int | None = None
+    remaining: int | None = None       # seconds until auto-off (valid while on)
     lasttime: int | None = None
     autoclosing: int | None = None
     isdelay: int | None = None
@@ -283,13 +284,16 @@ def _u64(b: bytes, o: int) -> int:
 
 
 def parse_onwall(b: bytes) -> State:
-    """OgeSPlugS216Model.parseWorkStatus (>=32 B): wifi u8, switch u8 (first of 8),
-    skip 7, power i32, voltage i32, elect i32, u16, lasttime i32, opentime i32, isdelay u8."""
+    """OgeSPlugS216Model.parseWorkStatus, checked against live bytes 2026-10-10.
+    wifi u8@0, switch u8@1 (first of 8), power int32@9 (A = /220), voltage
+    int32@13, elect int32@17, remaining u16@21 (seconds until auto-off; the
+    device keeps the last value while off, so only meaningful when on),
+    isdelay u8@25 (timed run active)."""
     if len(b) < 32:
         return State()
     return State(wifi=b[0], on=b[1] == 1, power_raw=_u32(b, 9),
                  energy_kwh=round(_u32(b, 17) / 3_600_000 / 1000, 3),
-                 lasttime=_u32(b, 23), secs_on=_u32(b, 27), isdelay=b[31])
+                 remaining=_u16(b, 21), isdelay=b[25])
 
 
 def parse_bath_heater(b: bytes) -> State:

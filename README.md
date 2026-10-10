@@ -35,7 +35,7 @@ After that it was the normal grind: a HACS integration modelled on ha-aux-cloud,
 - Boilers (On Wall, Bath heater) also get a water heater entity, a run timer and the auto shutdown setting. The run timer is in minutes: set it and the device turns itself off when the time is up, which still works if Home Assistant goes down halfway through. Auto shutdown is the same limit you see in the app, read from the device and written back to it.
 - Runner shutters get a cover with open, close, stop and set position.
 - Lights get brightness, RGB, colour temperature and effects.
-- Current, energy and time-on sensors, where the device reports them.
+- Current, energy and time remaining sensors, where the device reports them.
 - Live updates. One connection to the cloud stays open, so a change made in the app shows up a few seconds later.
 - Control is confirmed, not assumed. When you flip a switch the UI waits for the device to report the new state before it changes.
 - A reauthentication prompt when your Switcher password changes.
@@ -111,7 +111,6 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `number` "Auto shutdown" | On Wall, Bath heater | The device's own auto-shutdown limit in minutes, the same setting as in the app. Read from the device every poll. 0 means unlimited; values from 1 to 60 are raised to 61 by the device. |
 | `sensor` "Current" | energy-reporting families | Amperes. The device reports a raw value and the app divides by 220, so this follows the same convention. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. |
-| `sensor` "Time on" | energy-reporting families | Seconds the device has been on in the current session. |
 | `sensor` "Time remaining" | On Wall, Bath heater | Seconds until the device switches itself off, counted down by the device. 0 when it is off. |
 | `cover` | Runner shutters, mix-panel runner lines | Open / close / stop / position. Device class shutter. |
 | `light` | Lights | Brightness, RGB, colour temperature (2700 to 6500 K nominal), effects. Colour temperature direction unverified. |
