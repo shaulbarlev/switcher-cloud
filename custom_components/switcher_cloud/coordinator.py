@@ -99,12 +99,13 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 raise ConfigEntryAuthFailed(str(err)) from err
             except (SwitcherApiError, OSError, Exception) as err:  # noqa: BLE001
                 raise HomeAssistantError(str(err)) from err
-            # confirm: the cloud device list lags the ack by ~1-5 s; poll a few
-            # times until it reflects the requested state (or give up quietly
-            # and let the regular poll/push catch up).
-            for _ in range(6):
-                await asyncio.sleep(1.5)
-                await self.async_request_refresh()
+            # confirm: poll quickly (every 0.5 s) until the device reports the
+            # requested state, giving up after 30 s and letting the regular
+            # poll/push catch up.
+            deadline = self.hass.loop.time() + 30
+            while self.hass.loop.time() < deadline:
+                await asyncio.sleep(0.5)
+                await self.async_refresh()     # direct, not debounced
                 if (self.data or {}).get(did, {}).get("on") == on:
                     break
 
