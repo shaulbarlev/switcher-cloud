@@ -59,6 +59,18 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         value_fn=lambda st: st.get("secs_on"),
         present=lambda st: st.get("secs_on") is not None,
     ),
+    SwitcherSensorDescription(
+        key="time_remaining",
+        translation_key="time_remaining",
+        device_class=SensorDeviceClass.DURATION,
+        state_class=SensorStateClass.MEASUREMENT,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        # WorkStatus lasttime: the device's own countdown to auto-off while on,
+        # the same number the app shows on the boiler screen (yf/m1.java:348).
+        # Zero when the device is off.
+        value_fn=lambda st: (st.get("lasttime") or 0) if st.get("on") else 0,
+        present=lambda st: st.get("lasttime") is not None,
+    ),
 )
 
 
@@ -85,7 +97,8 @@ class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
         super().__init__(coordinator, did)
         self.entity_description = desc
         # keep the pre-existing unique ids so registry entries survive
-        legacy = {"current": "power", "energy": "energy", "time_on": "secs_on"}[desc.key]
+        legacy = {"current": "power", "energy": "energy", "time_on": "secs_on",
+                  "time_remaining": "time_remaining"}[desc.key]
         self._attr_unique_id = f"switcher_cloud_{did}_{legacy}"
 
     @property

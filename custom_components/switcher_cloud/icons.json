@@ -7,7 +7,8 @@
     "sensor": {
       "current": { "default": "mdi:current-ac" },
       "energy": { "default": "mdi:lightning-bolt" },
-      "time_on": { "default": "mdi:timer-outline" }
+      "time_on": { "default": "mdi:timer-outline" },
+      "time_remaining": { "default": "mdi:timer-sand" }
     },
     "water_heater": {
       "boiler": { "default": "mdi:water-boiler" }

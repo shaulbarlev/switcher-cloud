@@ -112,6 +112,7 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `sensor` "Current" | energy-reporting families | Amperes. The device reports a raw value and the app divides by 220, so this follows the same convention. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. |
 | `sensor` "Time on" | energy-reporting families | Seconds the device has been on in the current session. |
+| `sensor` "Time remaining" | On Wall, Bath heater | Seconds until the device switches itself off, counted down by the device. 0 when it is off. |
 | `cover` | Runner shutters, mix-panel runner lines | Open / close / stop / position. Device class shutter. |
 | `light` | Lights | Brightness, RGB, colour temperature (2700 to 6500 K nominal), effects. Colour temperature direction unverified. |
 
