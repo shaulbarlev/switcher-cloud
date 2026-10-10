@@ -252,12 +252,9 @@ class SwitcherClient:
             p = self._send(0x1343, b"")
             if p["errcode"] != 0:
                 raise SwitcherApiError(f"device list errcode={p['errcode']}")
+            # 0x1343 reply body is PLAINTEXT JSON (live-capture verified);
+            # only the 0x1102 login reply is AES-encrypted.
             body = p["body"]
-            if len(body) % 16 == 0:
-                try:
-                    body = _aes_dec(body)
-                except ValueError:
-                    pass
             i = body.find(b"{")
             if i < 0:
                 return []
