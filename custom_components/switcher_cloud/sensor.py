@@ -9,8 +9,8 @@ from homeassistant.components.sensor import (
     SensorStateClass,
 )
 from homeassistant.const import (
+    UnitOfElectricCurrent,
     UnitOfEnergy,
-    UnitOfPower,
 )
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -75,11 +75,11 @@ class SwitcherCloudSecondsSensor(
 class SwitcherCloudPowerSensor(
     CoordinatorEntity[SwitcherCloudCoordinator], SensorEntity
 ):
-    """Instantaneous power draw (WorkStatus int32@9 / 220)."""
+    """Instantaneous current draw (WorkStatus int32@9 / 220; unit A per the device)."""
 
-    _attr_device_class = SensorDeviceClass.POWER
+    _attr_device_class = SensorDeviceClass.CURRENT
     _attr_state_class = SensorStateClass.MEASUREMENT
-    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _attr_native_unit_of_measurement = UnitOfElectricCurrent.AMPERE
     _attr_suggested_display_precision = 1
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:

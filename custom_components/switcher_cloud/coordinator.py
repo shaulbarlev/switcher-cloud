@@ -7,7 +7,7 @@ from datetime import timedelta
 from typing import Any
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed, HomeAssistantError
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
@@ -34,6 +34,55 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self.client = SwitcherClient(
             entry.data["account"], entry.data["password"])
         self._command_locks: dict[str, asyncio.Lock] = {}
+        self._refresh_debounce_task: asyncio.Task | None = None
+        self._realtime_started = False
+
+    # -- realtime (push) channel, aux-cloud style ---------------------------------
+    @callback
+    def start_realtime(self) -> None:
+        """Start the persistent connection listener after platforms are set up."""
+        if self._realtime_started:
+            return
+        self._realtime_started = True
+        loop = self.hass.loop
+        self.client.start_listener(
+            on_push=lambda push: loop.call_soon_threadsafe(
+                self._handle_push, push),
+            on_reconnect=lambda: loop.call_soon_threadsafe(
+                self._handle_reconnect),
+        )
+
+    @callback
+    def stop_realtime(self) -> None:
+        self._realtime_started = False
+        if self._refresh_debounce_task:
+            self._refresh_debounce_task.cancel()
+            self._refresh_debounce_task = None
+        self.client.stop_listener()
+
+    @callback
+    def _handle_reconnect(self) -> None:
+        _LOGGER.debug("switcher connection re-established")
+        self._schedule_debounced_refresh()
+
+    @callback
+    def _handle_push(self, push: dict) -> None:
+        """0x0103 push from the server (device ack / status relay)."""
+        _LOGGER.debug("push: %s", push)
+        self._schedule_debounced_refresh()
+
+    @callback
+    def _schedule_debounced_refresh(self) -> None:
+        """One authoritative refresh shortly after any push/reconnect,
+        coalescing bursts (min ~4 s apart) instead of per-event polls."""
+        if self._refresh_debounce_task and not self._refresh_debounce_task.done():
+            return
+        self._refresh_debounce_task = self.config_entry.async_create_task(
+            self.hass, self._debounced_refresh(), "switcher_cloud_push_refresh")
+
+    async def _debounced_refresh(self) -> None:
+        await asyncio.sleep(4)
+        await self.async_request_refresh()
 
     async def async_set_switch(self, did: str, on: bool) -> None:
         """Optimistic command transaction (pattern from ha-aux-cloud): publish

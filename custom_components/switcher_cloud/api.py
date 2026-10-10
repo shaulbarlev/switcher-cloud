@@ -12,10 +12,13 @@ Protocol (reverse-engineered from Switcher 7.53, verified by live capture 2026-1
 from __future__ import annotations
 
 import base64
+import contextlib
 import json
 import logging
+import queue
 import socket
 import struct
+import threading
 import time
 from typing import Any
 
@@ -141,6 +144,19 @@ def _parse_login_reply(body: bytes) -> dict:
     }
 
 
+def parse_push(body: bytes) -> dict | None:
+    """0x0103 push body (live-captured): cmd u16, serial u16, ts u32,
+    then device-specific bytes (sub 0x23 = control ack)."""
+    if len(body) < 8:
+        return None
+    return {
+        "cmd": struct.unpack_from("<H", body, 0)[0],
+        "serial": struct.unpack_from("<H", body, 2)[0],
+        "ts": struct.unpack_from("<I", body, 4)[0],
+        "payload": body[8:],
+    }
+
+
 def parse_workstatus(b: bytes) -> dict:
     """OgeSPlugS216Model.parseWorkStatus (decompiled, capture-verified):
     wifiPower u8@0, switchState @1, power int32@9 (W = /220), voltage int32@13,
@@ -162,8 +178,18 @@ def parse_workstatus(b: bytes) -> dict:
 
 # ---- client ---------------------------------------------------------------------
 
+HEARTBEAT_INTERVAL = 25       # app: 0x1104 every ~10 s; we can be gentler
+PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
+
+
 class SwitcherClient:
-    """Blocking TCP client; HA wraps calls in asyncio.to_thread."""
+    """Blocking TCP client with a persistent connection.
+
+    One background listener thread owns the socket: it logs in, receives every
+    packet, delivers replies to waiting `request()` callers (aux-cloud-style
+    realtime channel), forwards 0x0103 pushes to `on_push`, and heartbeats
+    0x1104 on idle. If the connection drops it reconnects + re-logins.
+    """
 
     def __init__(self, account: str, password: str):
         self._account = account
@@ -173,11 +199,19 @@ class SwitcherClient:
         self.session = 0
         self.uid = 0
         self.comm_key = b"\x00" * 32
+        self._send_lock = threading.Lock()
+        self._pending: dict[int, queue.Queue[dict]] = {}
+        self._listener: threading.Thread | None = None
+        self._stopping = threading.Event()
+        self._on_push = None                 # callable(dict) in caller's thread
+        self._on_reconnect = None            # callable() in listener thread
 
+    # -- serial ------------------------------------------------------------------
     def _next_serial(self) -> int:
         self._serial = 1001 if self._serial == 0x7FFF else self._serial + 1
         return self._serial
 
+    # -- socket ------------------------------------------------------------------
     def _recv_packet(self) -> bytes:
         s = self._sock
         assert s is not None
@@ -196,38 +230,25 @@ class SwitcherClient:
             rest += chunk
         return hdr + rest
 
-    def _send(self, cmd: int, body: bytes, *, encrypted: bool = True,
-              version: bytes = b"\x03\x05", control: int = 0) -> dict:
-        assert self._sock is not None, "not connected"
+    def _raw_send(self, cmd: int, body: bytes, *, encrypted: bool = True,
+                  version: bytes = b"\x03\x05", control: int = 0) -> None:
+        s = self._sock
+        assert s is not None, "not connected"
         wire = _aes_enc(body) if encrypted else body
         pkt = build_packet(cmd, wire, self._next_serial(), self.session,
                            session_key=self.comm_key, control=control,
                            relation_id=struct.pack("<I", self.uid).ljust(6, b"\x00"),
                            timestamp=int(time.time()), version=version)
-        self._sock.sendall(pkt)
-        deadline = time.time() + 15
-        while time.time() < deadline:
-            self._sock.settimeout(max(1, deadline - time.time()))
-            p = parse_packet(self._recv_packet())
-            if p["cmd"] == cmd or p["cmd"] in (0x0103, 0x0102):
-                if p["cmd"] == cmd:
-                    return p
-            else:
-                return p
-        raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}")
+        s.sendall(pkt)
 
     def connect(self) -> None:
         """Open TCP + login (0x1102, version 2.50)."""
         self.close()
         self._sock = socket.create_connection((HOST, PORT), timeout=15)
         self._serial = 1000
-        pkt = build_packet(0x1102, _aes_enc(_login_body(self._account,
-                                                        self._password,
-                                                        int(time.time()))),
-                           self._next_serial(), 0, msg_type=1, control=0x0100,
-                           relation_id=b"\x00" * 6, timestamp=int(time.time()),
-                           version=b"\x02\x32")
-        self._sock.sendall(pkt)
+        self._raw_send(0x1102, _login_body(self._account, self._password,
+                                           int(time.time())),
+                       encrypted=True, version=b"\x02\x32", control=0x0100)
         p = parse_packet(self._recv_packet())
         if p["errcode"] != 0:
             self.close()
@@ -245,54 +266,128 @@ class SwitcherClient:
                 pass
             self._sock = None
 
-    def _ensure(self) -> None:
-        if self._sock is None:
-            self.connect()
+    # -- listener thread (realtime channel) --------------------------------------
+    def start_listener(self, on_push=None, on_reconnect=None) -> None:
+        """Start (or ensure) the persistent receive thread. Non-blocking."""
+        self._on_push = on_push or self._on_push
+        self._on_reconnect = on_reconnect or self._on_reconnect
+        if self._listener and self._listener.is_alive():
+            return
+        self._stopping.clear()
+        self._listener = threading.Thread(
+            target=self._listener_loop, name="switcher-cloud-listener", daemon=True)
+        self._listener.start()
 
-    def _retrying(self, fn):
-        self._ensure()
-        try:
-            return fn()
-        except (OSError, SwitcherApiError, struct.error) as err:
-            _LOGGER.debug("request failed (%s); reconnecting once", err)
-            self.close()
-            self.connect()
-            return fn()
+    def stop_listener(self) -> None:
+        self._stopping.set()
+        self.close()
 
+    def _listener_loop(self) -> None:
+        reconnects = 0
+        while not self._stopping.is_set():
+            try:
+                if self._sock is None:
+                    self.connect()
+                    reconnects = 0
+                    if self._on_reconnect:
+                        try:
+                            self._on_reconnect()
+                        except Exception:  # noqa: BLE001
+                            _LOGGER.exception("on_reconnect callback failed")
+                self._sock.settimeout(HEARTBEAT_INTERVAL)
+                p = parse_packet(self._recv_packet())
+                self._dispatch(p)
+            except socket.timeout:
+                with contextlib.suppress(OSError):
+                    self._raw_send(0x1104, b"")       # heartbeat on idle
+            except Exception as err:  # noqa: BLE001
+                if self._stopping.is_set():
+                    break
+                self.close()
+                reconnects += 1
+                delay = min(3 * reconnects, 30)
+                _LOGGER.warning("switcher connection lost (%s); retry in %ss",
+                                err, delay)
+                if self._stopping.wait(delay):
+                    break
+
+    def _dispatch(self, p: dict) -> None:
+        if p["cmd"] == PUSH_CMD:
+            push = parse_push(p["body"])
+            if push and self._on_push:
+                try:
+                    self._on_push(push)
+                except Exception:  # noqa: BLE001
+                    _LOGGER.exception("push callback failed")
+            # pushes also resolve any pending control command implicitly
+            q = self._pending.get(push["cmd"]) if push else None
+        else:
+            q = self._pending.get(p["cmd"])
+        if q is None:
+            q = self._pending.get(0)                  # catch-all slot
+        if q is not None:
+            try:
+                q.put_nowait(p)
+            except queue.Full:
+                with contextlib.suppress(queue.Empty):
+                    q.get_nowait()
+                    q.put_nowait(p)
+
+    # -- request bridge ----------------------------------------------------------
+    def request(self, cmd: int, body: bytes, *, encrypted: bool = True,
+                version: bytes = b"\x03\x05", control: int = 0,
+                timeout: float = 15) -> dict:
+        """Send one packet on the persistent connection and wait for its reply.
+        Reconnects once on failure."""
+        if self._listener is None or not self._listener.is_alive():
+            self.start_listener()
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            q = self._pending.setdefault(cmd, queue.Queue(maxsize=8))
+            with contextlib.suppress(queue.Empty):
+                q.get_nowait()                        # drop stale replies
+            try:
+                with self._send_lock:
+                    self._raw_send(cmd, body, encrypted=encrypted,
+                                   version=version, control=control)
+                return q.get(timeout=max(1, deadline - time.time()))
+            except (OSError, queue.Empty) as err:
+                self.close()
+                _LOGGER.debug("request 0x%04x failed (%s); reconnecting", cmd, err)
+                time.sleep(1)
+        raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}")
+
+    # -- high-level API ----------------------------------------------------------
     def get_devices(self) -> list[dict[str, Any]]:
-        def go():
-            p = self._send(0x1343, b"")
-            if p["errcode"] != 0:
-                raise SwitcherApiError(f"device list errcode={p['errcode']}")
-            # 0x1343 reply body is PLAINTEXT JSON (live-capture verified);
-            # only the 0x1102 login reply is AES-encrypted.
-            body = p["body"]
-            i = body.find(b"{")
-            if i < 0:
-                return []
-            data = json.loads(body[i:].decode("utf-8", "replace"))
-            return data.get("DevList") or data.get("devList") or []
-        return self._retrying(go)
+        p = self.request(0x1343, b"", encrypted=True)
+        if p["errcode"] != 0:
+            raise SwitcherApiError(f"device list errcode={p['errcode']}")
+        # 0x1343 reply body is PLAINTEXT JSON (live-capture verified);
+        # only the 0x1102 login reply is AES-encrypted.
+        body = p["body"]
+        i = body.find(b"{")
+        if i < 0:
+            return []
+        data = json.loads(body[i:].decode("utf-8", "replace"))
+        return data.get("DevList") or data.get("devList") or []
 
     def device_password(self, device: dict[str, Any]) -> str:
         return _b_a_decrypt(base64.b64decode(device["VisitPwd"]), self.comm_key)
 
     def set_switch(self, device_id: int, device_pwd: str, on: bool) -> None:
-        def go():
-            b = bytearray(48)
-            struct.pack_into("<I", b, 0, device_id)
-            struct.pack_into("<I", b, 4, self.uid)
-            b[8:40] = _b_c_encrypt(device_pwd)
-            b[40] = 0x23
-            struct.pack_into("<H", b, 41, 5)
-            b[43] = 1 if on else 0
-            struct.pack_into("<I", b, 44, 0)
-            # control body is sent PLAINTEXT (live capture); only the embedded
-            # pwd block is pre-encrypted with the native key
-            p = self._send(0x0201, bytes(b), encrypted=False)
-            if p["errcode"] != 0:
-                raise SwitcherApiError(f"control errcode={p['errcode']}")
-        self._retrying(go)
+        b = bytearray(48)
+        struct.pack_into("<I", b, 0, device_id)
+        struct.pack_into("<I", b, 4, self.uid)
+        b[8:40] = _b_c_encrypt(device_pwd)
+        b[40] = 0x23
+        struct.pack_into("<H", b, 41, 5)
+        b[43] = 1 if on else 0
+        struct.pack_into("<I", b, 44, 0)
+        # control body is sent PLAINTEXT (live capture); only the embedded
+        # pwd block is pre-encrypted with the native key
+        p = self.request(0x0201, bytes(b), encrypted=False)
+        if p["errcode"] != 0:
+            raise SwitcherApiError(f"control errcode={p['errcode']}")
 
     @staticmethod
     def device_state(device: dict[str, Any]) -> dict:
