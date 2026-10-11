@@ -30,3 +30,15 @@ jobs:
           python-version: "3.13"
       - run: pip install pytest pycryptodome
       - run: python -m pytest tests -q
+
+  # The registry migration runs against Home Assistant itself. Its harness
+  # blocks sockets, which the fake-cloud tests need, so the two suites stay apart.
+  ha-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - run: pip install pytest-homeassistant-custom-component pycryptodome
+      - run: python -m pytest tests/test_migration.py -q

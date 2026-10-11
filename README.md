@@ -143,7 +143,7 @@ When a device is offline in the Switcher cloud its entities go unavailable.
 
 Issues and pull requests are welcome. Bug reports are most useful with the diagnostics download attached. For an unverified device, a packet capture of the official app controlling it is what lets me confirm the bytes. I use [PCAPdroid](https://github.com/emanuele-f/PCAPdroid) on Android.
 
-The protocol code lives in `custom_components/switcher_cloud/devices.py`. Unit tests run with `python -m pytest tests` and need only Python and `pycryptodome`.
+The protocol code lives in `custom_components/switcher_cloud/devices.py`. Unit tests run with `python -m pytest tests` and need only Python and `pycryptodome`; `tests/test_migration.py` additionally needs `pytest-homeassistant-custom-component` and skips itself without it (CI runs the two apart, since that harness blocks the sockets the fake cloud uses).
 
 ## Disclaimer
 

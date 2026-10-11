@@ -1,5 +1,7 @@
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+asyncio_mode = "auto"
+filterwarnings = ["ignore:.*requested an async fixture.*:pytest.PytestDeprecationWarning"]
 
 [tool.ruff]
 line-length = 100

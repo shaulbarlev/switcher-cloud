@@ -1,6 +1,7 @@
 """Sensor platform: power, current, energy, remaining time, time on (and Breeze temperature) from WorkStatus."""
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import timedelta
@@ -21,12 +22,16 @@ from homeassistant.const import (
     UnitOfTime,
 )
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.typing import UNDEFINED
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import ENERGY_FAMILIES, Family
 from .entity import LocalClock, SwitcherCloudEntity, async_add_new_devices
+
+_LOGGER = logging.getLogger(__name__)
 
 PARALLEL_UPDATES = 0
 
@@ -122,6 +127,7 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     coordinator = entry.runtime_data
+    _migrate_power_sensors(hass, entry)
 
     def factory(did: str, st: dict[str, Any]) -> list[SensorEntity]:
         if Family(st.get("family", "unknown")) not in ENERGY_FAMILIES | {Family.AIRCON}:
@@ -134,6 +140,48 @@ async def async_setup_entry(
     async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
+def _migrate_power_sensors(hass: HomeAssistant, entry: SwitcherCloudConfigEntry) -> None:
+    """Give the watts sensor back its original identity.
+
+    Releases 1.0.0 to 1.0.2 shipped the sensor born as `<did>_power` (W) as
+    an amps sensor, and the watts came back under `<did>_power_w`. On an
+    install from before that, `sensor.<name>_power` therefore turned into
+    "Current" in A — its history stopped (HA refuses a unit change on a
+    statistic) and anything reading it got ~11 instead of ~2500. Now the keys
+    are `_power` (W) and `_current` (A), and the entity ids follow: the watts
+    sensor takes `sensor.<name>_power` back, the amps one moves to
+    `sensor.<name>_current`. Statistics follow a renamed entity id, so the W
+    history resumes under the id it was recorded for. An install from 1.0.1
+    or 1.0.2 only has its unique ids renamed; its entity ids already said
+    the right thing when they were created.
+    """
+    registry = er.async_get(hass)
+    entries = er.async_entries_for_config_entry(registry, entry.entry_id)
+    amps = {e.unique_id[: -len("_power")]: e for e in entries
+            if e.domain == "sensor" and e.unique_id.endswith("_power")
+            and e.original_device_class == SensorDeviceClass.CURRENT}
+    watts = {e.unique_id[: -len("_power_w")]: e for e in entries
+             if e.domain == "sensor" and e.unique_id.endswith("_power_w")}
+    for stem, old_amps in amps.items():
+        old_watts = watts.get(stem)
+        amps_id, watts_id = old_amps.entity_id, old_watts.entity_id if old_watts else None
+        # Born as "Power": hand the id to the watts sensor and move the amps aside.
+        swap = old_watts is not None and amps_id.endswith("_power")
+        if swap:
+            amps_id = amps_id[: -len("_power")] + "_current"
+            if registry.async_get(amps_id) is not None:
+                amps_id = old_amps.entity_id  # taken; keep the old id rather than invent one
+                swap = False
+        # The amps sensor's unique id is what the watts one needs, so free it first.
+        registry.async_update_entity(old_amps.entity_id, new_unique_id=f"{stem}_current",
+                                     new_entity_id=amps_id if swap else UNDEFINED)
+        if old_watts is not None:
+            registry.async_update_entity(old_watts.entity_id, new_unique_id=f"{stem}_power",
+                                         new_entity_id=old_amps.entity_id if swap else UNDEFINED)
+        _LOGGER.info("migrated power sensors for %s: amps -> %s, watts -> %s",
+                     stem, amps_id, old_amps.entity_id if swap else watts_id)
+
+
 class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
     entity_description: SwitcherSensorDescription
 
@@ -141,10 +189,7 @@ class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
                  desc: SwitcherSensorDescription) -> None:
         super().__init__(coordinator, did)
         self.entity_description = desc
-        # keep the pre-existing unique ids so registry entries survive: the
-        # amps sensor was born as "_power", so the watts one takes "_power_w".
-        legacy = {"current": "power", "power": "power_w"}.get(desc.key, desc.key)
-        self._attr_unique_id = f"switcher_cloud_{did}_{legacy}"
+        self._attr_unique_id = f"switcher_cloud_{did}_{desc.key}"
 
     @property
     def native_value(self) -> float | int | None:
