@@ -41,4 +41,4 @@ jobs:
         with:
           python-version: "3.13"
       - run: pip install pytest-homeassistant-custom-component pycryptodome
-      - run: python -m pytest tests/test_migration.py -q
+      - run: python -m pytest tests/test_ha.py -q

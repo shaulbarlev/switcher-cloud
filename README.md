@@ -110,7 +110,7 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `water_heater` | On Wall, V2, Touch, V4, Mini | Shows On / Off. No temperature, the cloud does not report one. |
 | `number` "Run timer" | boilers and the Heater | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. While running it shows the minutes left and counts down (refreshed every poll), also for runs started from the app. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
 | `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. On Wall: 61 to 1439, the range the app allows; like the app, it cannot be turned off. V2, Touch, V4, Mini: 60 to 1439, the range aioswitcher sends. Other values are rejected. The Heater reports this value and gets a diagnostic sensor instead. |
-| `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
+| `sensor` "Power" | energy-reporting families | Watts, the device's last reading: WorkStatus is a snapshot the device sends at a state change and now and then while running, not a value sampled per poll. 0 while the device is off (the off snapshot can still carry the running figure). 0 while on is real: the boiler's thermostat has opened and the element is not drawing. aioswitcher reads the same field as watts. |
 | `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. The On Wall reports 0 here. |
 | `sensor` "Remaining time" | boilers and the Heater | Time until the device switches itself off, as "X minutes, Y seconds" (the raw value is the `seconds` attribute). Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. "0 seconds" when off. |
@@ -143,7 +143,7 @@ When a device is offline in the Switcher cloud its entities go unavailable.
 
 Issues and pull requests are welcome. Bug reports are most useful with the diagnostics download attached. For an unverified device, a packet capture of the official app controlling it is what lets me confirm the bytes. I use [PCAPdroid](https://github.com/emanuele-f/PCAPdroid) on Android.
 
-The protocol code lives in `custom_components/switcher_cloud/devices.py`. Unit tests run with `python -m pytest tests` and need only Python and `pycryptodome`; `tests/test_migration.py` additionally needs `pytest-homeassistant-custom-component` and skips itself without it (CI runs the two apart, since that harness blocks the sockets the fake cloud uses).
+The protocol code lives in `custom_components/switcher_cloud/devices.py`. Unit tests run with `python -m pytest tests` and need only Python and `pycryptodome`; `tests/test_ha.py` additionally needs `pytest-homeassistant-custom-component` and skips itself without it (CI runs the two apart, since that harness blocks the sockets the fake cloud uses).
 
 ## Disclaimer
 

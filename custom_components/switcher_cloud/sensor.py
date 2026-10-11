@@ -42,6 +42,24 @@ class SwitcherSensorDescription(SensorEntityDescription):
     present: Callable[[dict[str, Any]], bool]
 
 
+def watts(st: dict[str, Any]) -> int | None:
+    """The device's last power reading, in W, 0 while the device is off.
+
+    WorkStatus is a snapshot the device sends at a state change and now and
+    then while running (seen: 33 s and 23 min after switching on), not a
+    value sampled per poll. Its power field is simply the last measurement
+    the device made, so the snapshot taken when it switches off can still
+    carry the running figure — an On Wall sat at 2693 W for five hours
+    while off (2026-10-11). Off means no current can flow, so report 0.
+    While on, 0 is real: the boiler's own thermostat has opened and the
+    element is not drawing.
+    """
+    raw = st.get("power_raw")
+    if raw is None:
+        return None
+    return 0 if st.get("on") is False else raw
+
+
 SENSORS: tuple[SwitcherSensorDescription, ...] = (
     SwitcherSensorDescription(
         key="power",
@@ -51,7 +69,7 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfPower.WATT,
         # aioswitcher reads the same field as watts (power_consumption) and
         # derives amps as watts / 220, which is what the app's "/220" is.
-        value_fn=lambda st: st.get("power_raw"),
+        value_fn=watts,
         present=lambda st: st.get("power_raw") is not None,
     ),
     SwitcherSensorDescription(
@@ -62,7 +80,7 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
         native_unit_of_measurement=UnitOfElectricCurrent.AMPERE,
         suggested_display_precision=1,
         # vendor convention: raw / 220 (OgeSPlugS216Model.parseWorkStatus)
-        value_fn=lambda st: None if st.get("power_raw") is None else st["power_raw"] / 220.0,
+        value_fn=lambda st: None if (w := watts(st)) is None else w / 220.0,
         present=lambda st: st.get("power_raw") is not None,
     ),
     SwitcherSensorDescription(

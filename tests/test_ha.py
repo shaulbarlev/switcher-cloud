@@ -1,4 +1,4 @@
-"""The power/current registry migration, against Home Assistant's real entity registry.
+"""Sensor behaviour that needs Home Assistant itself: the power/current registry migration and the power value.
 
 Needs `pytest-homeassistant-custom-component`; the plain protocol suite does not,
 so this file skips itself when the harness is absent.
@@ -9,13 +9,13 @@ import pytest
 
 pytest.importorskip("pytest_homeassistant_custom_component")
 
-from homeassistant.components.sensor import SensorDeviceClass  # noqa: E402
-from homeassistant.core import HomeAssistant  # noqa: E402
-from homeassistant.helpers import entity_registry as er  # noqa: E402
-from pytest_homeassistant_custom_component.common import MockConfigEntry  # noqa: E402
+from homeassistant.components.sensor import SensorDeviceClass
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers import entity_registry as er
+from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.switcher_cloud.const import DOMAIN  # noqa: E402
-from custom_components.switcher_cloud.sensor import _migrate_power_sensors  # noqa: E402
+from custom_components.switcher_cloud.const import DOMAIN
+from custom_components.switcher_cloud.sensor import _migrate_power_sensors
 
 DID = "0123456789ab"
 
@@ -89,3 +89,14 @@ async def test_renamed_by_user_is_left_alone(hass: HomeAssistant) -> None:
     reg = er.async_get(hass)
     assert reg.async_get_entity_id("sensor", DOMAIN, f"switcher_cloud_{DID}_current") == "sensor.dud_amps"
     assert reg.async_get_entity_id("sensor", DOMAIN, f"switcher_cloud_{DID}_power") == "sensor.dud_watts"
+
+
+def test_power_is_zero_while_off() -> None:
+    """The off snapshot keeps the last running figure; the sensor must not."""
+    from custom_components.switcher_cloud.sensor import watts
+
+    assert watts({"on": False, "power_raw": 2693}) == 0
+    assert watts({"on": True, "power_raw": 2693}) == 2693
+    assert watts({"on": True, "power_raw": 0}) == 0          # thermostat open: real
+    assert watts({"on": None, "power_raw": 2693}) == 2693    # unknown state: pass it on
+    assert watts({"on": False}) is None                      # family without the field
