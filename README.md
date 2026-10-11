@@ -108,7 +108,7 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `switch` | boilers, plugs, wall switches | Main on/off. One per gang on wall switches. |
 | `switch` "Child lock" | Runners, runner lines | The Runner's child lock, as in the app and `switcher_kis`. |
 | `water_heater` | On Wall, V2, Touch, V4, Mini | Shows On / Off. No temperature, the cloud does not report one. |
-| `number` "Run timer" | boilers and the Heater | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
+| `number` "Run timer" | boilers and the Heater | Minutes, 0 to 90. Setting N turns the device on and it switches itself off after N minutes. Setting 0 turns it off. While running it shows the minutes left and counts down (refreshed every poll), also for runs started from the app. A run longer than the auto shutdown limit is cut at that limit, as in the app. |
 | `number` "Auto shutdown" | On Wall, V2, Touch, V4, Mini | The device's own auto-shutdown limit in minutes, the same setting as in the app. On Wall: 61 to 1439, the range the app allows; like the app, it cannot be turned off. V2, Touch, V4, Mini: 60 to 1439, the range aioswitcher sends. Other values are rejected. The Heater reports this value and gets a diagnostic sensor instead. |
 | `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
 | `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |

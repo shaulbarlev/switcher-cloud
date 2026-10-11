@@ -3,9 +3,9 @@
 Setting the number to N minutes turns the device ON with isdelay = N*60 s, so
 the device itself switches off after N minutes (OgeSPlugS216Model/ei.b.w:
 sub 0x23 with isdelay seconds; app UI a1/e2.java:437-456, 10 s granularity).
-Setting 0 just turns it off. The device reports the remaining seconds in
-WorkStatus; the Auto off at sensor shows it. This number shows the requested
-run length until the device turns off.
+Setting 0 just turns it off. While the device runs, the number shows the
+minutes left (from the remaining seconds the device reports in WorkStatus,
+refreshed every poll), so it counts down and reads 0 once the device is off.
 """
 from __future__ import annotations
 
@@ -49,7 +49,7 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
     _attr_mode = NumberMode.SLIDER
     _attr_native_min_value = 0
     _attr_native_max_value = MAX_MINUTES
-    _attr_native_step = 5
+    _attr_native_step = 1            # the value is a countdown, so any minute is valid
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
 
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
@@ -59,16 +59,22 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
 
     @callback
     def _handle_coordinator_update(self) -> None:
-        # The device's own countdown is the "Remaining time" sensor; this number
-        # only remembers what was asked for, so once the device turns itself
-        # off the request is spent and it goes back to 0.
+        # Once the device is off the request is spent.
         if self._requested and not self._st().get("on"):
             self._requested = 0
         super()._handle_coordinator_update()
 
     @property
     def native_value(self) -> float | None:
-        return self._requested
+        """Minutes left on the current run, counting down with each poll (the
+        device's own countdown, so it is right after a restart and for runs
+        started from the app). 0 when off. Falls back to the requested length
+        until the first poll reports a remaining time."""
+        st = self._st()
+        if not st.get("on"):
+            return 0
+        remaining = st.get("remaining") or 0
+        return -(-remaining // 60) if remaining > 0 else self._requested
 
     async def async_set_native_value(self, value: float) -> None:
         minutes = int(value)
