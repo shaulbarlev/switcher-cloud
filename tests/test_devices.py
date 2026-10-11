@@ -144,9 +144,9 @@ def test_auto_shutdown_write_matches_capture():
     # captured 0x0E01 tail when the app set 2 h: count=1, id=0x0C14, len=4, 7200
     body = devices.body_auto_shutdown(1, 2, b"\x00" * 32, 7200)
     assert body[40:] == bytes.fromhex("0100140c0400201c0000")
-    # 1..3659 s is raised to 3660 (1 h 1 m), 0 stays 0
+    # anything under 3660 s is raised to 3660 (1 h 1 m) like the app; there is no "off"
     assert devices.body_auto_shutdown(1, 2, b"\x00" * 32, 600)[46:50] == struct.pack("<i", 3660)
-    assert devices.body_auto_shutdown(1, 2, b"\x00" * 32, 0)[46:50] == b"\x00\x00\x00\x00"
+    assert devices.body_auto_shutdown(1, 2, b"\x00" * 32, 0)[46:50] == struct.pack("<i", 3660)
 
 
 def test_auto_shutdown_read_and_push_payload():
@@ -288,8 +288,9 @@ def test_auto_shutdown_range_by_family():
     # PLUG (V2/Touch/V4/Mini): the 1 h .. 23:59 window aioswitcher enforces, inclusive
     assert ok(F.PLUG, 3600) and ok(F.PLUG, 86340) and ok(F.PLUG, 7200)
     assert not ok(F.PLUG, 0) and not ok(F.PLUG, 3599) and not ok(F.PLUG, 86341) and not ok(F.PLUG, 86400)
-    # ON_WALL: 0 = unlimited and short values are clamped by body_auto_shutdown, never rejected
-    assert ok(F.ON_WALL, 0) and ok(F.ON_WALL, 600) and ok(F.ON_WALL, 86400)
+    # ON_WALL: 61 min .. 23:59, the app's range; no 0 (the app cannot turn auto shutdown off)
+    assert ok(F.ON_WALL, 3660) and ok(F.ON_WALL, 7200) and ok(F.ON_WALL, 86340)
+    assert not ok(F.ON_WALL, 0) and not ok(F.ON_WALL, 3600) and not ok(F.ON_WALL, 3659) and not ok(F.ON_WALL, 86400)
     assert devices.classify("0F02")[0] is devices.Family.MIX           # Runner S12
     assert devices.product_name("0F06", devices.Family.MIX) == "Light SL03"
     assert devices.classify("0E01")[0] is devices.Family.AIRCON

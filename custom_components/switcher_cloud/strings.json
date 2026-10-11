@@ -116,7 +116,7 @@
       "message": "The Switcher cloud rejected the saved password. Re-authenticate the integration."
     },
     "auto_off_range": {
-      "message": "Auto shutdown for this boiler must be between 1 hour and 23 hours 59 minutes."
+      "message": "Auto shutdown must be between 1 hour and 23 hours 59 minutes (1 hour 1 minute on the On Wall). It cannot be turned off."
     },
     "not_timed": {
       "message": "This device has no run timer. Only boilers can be turned on with a timer."

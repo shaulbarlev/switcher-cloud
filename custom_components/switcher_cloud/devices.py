@@ -90,12 +90,14 @@ def is_timed(device_type: str) -> bool:
 
 def auto_shutdown_valid(family: Family, seconds: int) -> bool:
     """Range check before an auto shutdown write. PLUG: 1 h to 23:59 (see
-    PLUG_AUTO_SHUTDOWN_RANGE). ON_WALL: anything; body_auto_shutdown applies
-    the device's own rule (0 = unlimited, else at least 3660 s)."""
+    PLUG_AUTO_SHUTDOWN_RANGE). ON_WALL: 61 min to 23:59 (ON_WALL_AUTO_SHUTDOWN_RANGE),
+    the same window the app allows; the app has no way to turn auto shutdown off,
+    so 0 is rejected rather than sent as "unlimited"."""
     if family is Family.PLUG:
         lo, hi = PLUG_AUTO_SHUTDOWN_RANGE
-        return lo <= seconds <= hi
-    return True
+    else:
+        lo, hi = ON_WALL_AUTO_SHUTDOWN_RANGE
+    return lo <= seconds <= hi
 
 
 def classify(device_type: str) -> tuple[Family, int, int]:
@@ -277,7 +279,8 @@ def next_seed(device: int, local: int | None, on: bool, last_device: int | None,
 
 # ---- parameter writes (businessCode 0x0E01, ei/b.z via OgeCommonDeviceModel.getWriteParamsCMD) ----
 PARAM_AUTO_SHUTDOWN = 0x0C14     # 3092: S216 auto-shutdown limit in seconds (ag/z1.java:219-225, vf/o0 case 8)
-AUTO_SHUTDOWN_MIN = 3660         # app clamps 1..3659 up to 3660 (61 min); 0 = unlimited
+AUTO_SHUTDOWN_MIN = 3660         # the app's floor: 61 min. The app offers no "off"; 0 is not a valid value
+ON_WALL_AUTO_SHUTDOWN_RANGE = (AUTO_SHUTDOWN_MIN, 86340)
 
 
 def body_write_params(did: int, uid: int, pwd_block: bytes, params: dict[int, bytes]) -> bytes:
@@ -295,9 +298,10 @@ def body_write_params(did: int, uid: int, pwd_block: bytes, params: dict[int, by
 
 
 def body_auto_shutdown(did: int, uid: int, pwd_block: bytes, seconds: int) -> bytes:
-    """Set the S216 auto-shutdown limit. 0 = unlimited; otherwise at least 3660 s.
+    """Set the S216 auto-shutdown limit, at least 3660 s (the app's floor).
+    Callers validate with auto_shutdown_valid first; this only clamps as the app does.
     Capture-verified 2026-10-10: 0x0E01 body tail `0100 140c 0400 <i32 LE>`."""
-    s = 0 if seconds <= 0 else max(AUTO_SHUTDOWN_MIN, int(seconds))
+    s = max(AUTO_SHUTDOWN_MIN, int(seconds))
     return body_write_params(did, uid, pwd_block, {PARAM_AUTO_SHUTDOWN: struct.pack("<i", s)})
 
 

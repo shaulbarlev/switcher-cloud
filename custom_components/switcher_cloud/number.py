@@ -17,7 +17,8 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
-from .devices import AUTO_SHUTDOWN_WRITABLE, Family
+from .devices import (AUTO_SHUTDOWN_WRITABLE, ON_WALL_AUTO_SHUTDOWN_RANGE,
+                      PLUG_AUTO_SHUTDOWN_RANGE, Family)
 from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
@@ -88,14 +89,13 @@ class SwitcherCloudAutoShutdown(SwitcherCloudEntity, NumberEntity):
     with 0x0E01. Capture-verified 2026-10-10. V2/Touch/V4/Mini: read from
     WorkStatus (autoclosing i32 @22), written with sub 0x04, the same packet
     aioswitcher's set_auto_shutdown sends over the LAN.
-    In minutes. S216: 0 = unlimited, 1 to 60 is raised to 61 by the device
-    (body_auto_shutdown, matching the app). V2/Touch/V4/Mini: 60 to 1439 only,
-    the range aioswitcher sends; anything else is rejected before the write.
+    In minutes. S216: 61 to 1439, the app's own range (the app cannot turn
+    auto shutdown off, so there is no 0). V2/Touch/V4/Mini: 60 to 1439, the
+    range aioswitcher sends. Anything else is rejected before the write.
     """
 
     _attr_translation_key = "auto_shutdown"
     _attr_mode = NumberMode.BOX
-    _attr_native_min_value = 0
     _attr_native_max_value = 24 * 60 - 1
     _attr_native_step = 1
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
@@ -104,6 +104,9 @@ class SwitcherCloudAutoShutdown(SwitcherCloudEntity, NumberEntity):
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator, did)
         self._attr_unique_id = f"switcher_cloud_{did}_auto_shutdown"
+        fam = Family(self._st().get("family", "unknown"))
+        lo = PLUG_AUTO_SHUTDOWN_RANGE[0] if fam is Family.PLUG else ON_WALL_AUTO_SHUTDOWN_RANGE[0]
+        self._attr_native_min_value = lo // 60
 
     @property
     def native_value(self) -> float | None:
