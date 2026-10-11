@@ -10,7 +10,7 @@ from datetime import timedelta
 from typing import Any, NoReturn
 
 from homeassistant.config_entries import ConfigEntry
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import (
     ConfigEntryAuthFailed,
     HomeAssistantError,
@@ -69,6 +69,12 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         # the countdown sensor seeds from it so an extended run is not clipped
         # by a stale cloud value.
         self.run_hint: dict[str, tuple[int, float]] = {}
+        # did -> (HA context of the service call that last switched the device,
+        # monotonic time). The switch entity stamps its confirmed on/off state
+        # write with it, so "who turned the boiler on" survives a command that
+        # came through the run timer number or the water heater rather than the
+        # switch itself (HA only hands the context to the entity it targeted).
+        self.command_context: dict[str, tuple[Context, float]] = {}
         self._refresh_debounce_task: asyncio.Task | None = None
         self._realtime_started = False
 
@@ -131,12 +137,15 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                                  translation_placeholders={"error": str(err)}) from err
 
     async def async_set_switch(self, did: str, on: bool, gang: int | None = None,
-                               run_seconds: int = 0) -> None:
+                               run_seconds: int = 0, context: Context | None = None) -> None:
         """Send on/off for the device's family, then poll until the device
         reports the new state. The UI only flips once the device really changed.
         `gang` selects a line on multi-gang wall switches (0/None = all).
         `run_seconds` > 0 = timed run (boost): the device turns itself off after
-        that many seconds (S216/bath heater isdelay/delayTime; plug isdelay)."""
+        that many seconds (S216/bath heater isdelay/delayTime; plug isdelay).
+        `context` is the HA context of the calling service, see command_context."""
+        if context is not None:
+            self.command_context[did] = (context, time.monotonic())
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             st = (self.data or {}).get(did)
             if st is None:

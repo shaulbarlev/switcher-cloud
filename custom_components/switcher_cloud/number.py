@@ -109,10 +109,10 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
         minutes = int(value)
         if minutes <= 0:
             self._requested = 0
-            await self.coordinator.async_set_switch(self._did, False)
+            await self.coordinator.async_set_switch(self._did, False, context=self._context)
         else:
             await self.coordinator.async_set_switch(
-                self._did, True, run_seconds=minutes * 60)
+                self._did, True, run_seconds=minutes * 60, context=self._context)
             self._requested = minutes       # set after confirm so the reset can't race
         self.async_write_ha_state()
 

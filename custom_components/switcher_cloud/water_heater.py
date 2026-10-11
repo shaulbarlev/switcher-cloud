@@ -52,10 +52,10 @@ class SwitcherCloudWaterHeater(SwitcherCloudEntity, WaterHeaterEntity):
         return None if on is None else (STATE_ELECTRIC if on else STATE_OFF)
 
     async def async_set_operation_mode(self, operation_mode: str) -> None:
-        await self.coordinator.async_set_switch(self._did, operation_mode != STATE_OFF)
+        await self.coordinator.async_set_switch(self._did, operation_mode != STATE_OFF, context=self._context)
 
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.coordinator.async_set_switch(self._did, True)
+        await self.coordinator.async_set_switch(self._did, True, context=self._context)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.async_set_switch(self._did, False)
+        await self.coordinator.async_set_switch(self._did, False, context=self._context)

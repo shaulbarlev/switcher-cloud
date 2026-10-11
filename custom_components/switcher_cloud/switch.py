@@ -2,13 +2,14 @@
 switches, plus the Runner child lock (as switcher_kis does)."""
 from __future__ import annotations
 
+import time
 from datetime import timedelta
 from typing import Any
 
 import voluptuous as vol
 from homeassistant.components.switch import SwitchDeviceClass, SwitchEntity
 from homeassistant.const import EntityCategory
-from homeassistant.core import HomeAssistant
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ServiceValidationError
 from homeassistant.helpers import config_validation as cv, entity_platform
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
@@ -19,6 +20,8 @@ from .devices import AUTO_SHUTDOWN_WRITABLE, SWITCHABLE, Family, body_curtain_lo
 from .entity import SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
+
+COMMAND_CONTEXT_TTL = 60      # s; a confirm never takes longer than CONFIRM_TIMEOUT (30 s)
 
 # Same names, fields and ranges as switcher_kis (services.py there), so an
 # automation ports by changing the domain.
@@ -105,16 +108,32 @@ class SwitcherCloudSwitch(SwitcherCloudEntity, SwitchEntity):
         # raw device status, for bug reports on unverified families
         return {"work_status": self._st().get("workstatus_hex")}
 
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        # A confirmed on/off that was asked for through another entity (run
+        # timer number, water heater) or whose confirmation took longer than
+        # HA keeps a service context alive (5 s): write it with the context of
+        # that service call, so the state change records the user who did it.
+        pending = self.coordinator.command_context.get(self._did)
+        if pending and self.hass and self.hass.states.get(self.entity_id) is not None:
+            ctx, at = pending
+            was_on = self.hass.states.get(self.entity_id).state == "on"
+            if self.is_on != was_on and time.monotonic() - at < COMMAND_CONTEXT_TTL:
+                self.async_set_context(ctx)
+                self.coordinator.command_context.pop(self._did, None)
+        super()._handle_coordinator_update()
+
     async def async_turn_on(self, **kwargs: Any) -> None:
-        await self.coordinator.async_set_switch(self._did, True, self._gang)
+        await self.coordinator.async_set_switch(self._did, True, self._gang, context=self._context)
 
     async def async_turn_off(self, **kwargs: Any) -> None:
-        await self.coordinator.async_set_switch(self._did, False, self._gang)
+        await self.coordinator.async_set_switch(self._did, False, self._gang, context=self._context)
 
     async def async_turn_on_with_timer_service(self, timer_minutes: int) -> None:
         if not self._st().get("timed"):
             raise ServiceValidationError(translation_domain=DOMAIN, translation_key="not_timed")
-        await self.coordinator.async_set_switch(self._did, True, run_seconds=timer_minutes * 60)
+        await self.coordinator.async_set_switch(self._did, True, run_seconds=timer_minutes * 60,
+                                                context=self._context)
 
     async def async_set_auto_off_service(self, auto_off: timedelta) -> None:
         if Family(self._st().get("family", "unknown")) not in AUTO_SHUTDOWN_WRITABLE:
