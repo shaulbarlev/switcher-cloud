@@ -13,13 +13,16 @@ from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory, UnitOfTime
+from datetime import timedelta
+
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import (AUTO_SHUTDOWN_WRITABLE, ON_WALL_AUTO_SHUTDOWN_RANGE,
                       PLUG_AUTO_SHUTDOWN_RANGE, Family)
-from .entity import SwitcherCloudEntity, async_add_new_devices
+from .entity import LocalClock, SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -52,28 +55,54 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
     _attr_native_step = 1            # the value is a countdown, so any minute is valid
     _attr_native_unit_of_measurement = UnitOfTime.MINUTES
 
+    _attr_should_poll = False
+
     def __init__(self, coordinator: SwitcherCloudCoordinator, did: str) -> None:
         super().__init__(coordinator, did)
         self._attr_unique_id = f"switcher_cloud_{did}_run_timer"
         self._requested: int = 0
+        self._clock = LocalClock(-1, coordinator, did)
+        self._unsub_tick = None
+
+    async def async_added_to_hass(self) -> None:
+        await super().async_added_to_hass()
+        self._resync()
+        # the value is whole minutes, so a 15 s look is plenty
+        self._unsub_tick = async_track_time_interval(
+            self.hass, self._tick, timedelta(seconds=15))
+
+    async def async_will_remove_from_hass(self) -> None:
+        if self._unsub_tick:
+            self._unsub_tick()
+            self._unsub_tick = None
+        await super().async_will_remove_from_hass()
+
+    def _resync(self) -> None:
+        st = self._st()
+        self._clock.resync(st, int((st.get("remaining") or 0) if st.get("on") else 0))
 
     @callback
     def _handle_coordinator_update(self) -> None:
+        self._resync()
         # Once the device is off the request is spent.
         if self._requested and not self._st().get("on"):
             self._requested = 0
         super()._handle_coordinator_update()
 
+    @callback
+    def _tick(self, _now) -> None:
+        if self._clock.was_on and self.available:
+            self.async_write_ha_state()
+
     @property
     def native_value(self) -> float | None:
-        """Minutes left on the current run, counting down with each poll (the
-        device's own countdown, so it is right after a restart and for runs
-        started from the app). 0 when off. Falls back to the requested length
-        until the first poll reports a remaining time."""
-        st = self._st()
-        if not st.get("on"):
+        """Minutes left on the current run, counting down between polls on the
+        same local clock as the Remaining time sensor (so it is right after a
+        restart and for runs started from the app). 0 when off. Falls back to
+        the requested length until the device reports a remaining time."""
+        if not self._st().get("on"):
             return 0
-        remaining = st.get("remaining") or 0
+        remaining = self._clock.value() or 0
         return -(-remaining // 60) if remaining > 0 else self._requested
 
     async def async_set_native_value(self, value: float) -> None:

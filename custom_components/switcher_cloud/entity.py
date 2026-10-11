@@ -1,6 +1,7 @@
 """Shared entity base for Switcher Cloud."""
 from __future__ import annotations
 
+import time
 from collections.abc import Callable, Iterable
 from typing import Any
 
@@ -12,7 +13,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
-from .devices import MODEL_NAMES, VERIFIED, Family
+from .devices import MODEL_NAMES, VERIFIED, Family, next_seed
 
 
 @callback
@@ -80,3 +81,55 @@ class SwitcherCloudEntity(CoordinatorEntity[SwitcherCloudCoordinator]):
     def available(self) -> bool:
         st = self.coordinator.data.get(self._did)
         return super().available and bool(st) and bool(st.get("online", True))
+
+
+class LocalClock:
+    """A device seconds counter kept moving between polls.
+
+    The cloud only refreshes the device's timer fields now and then, and
+    often hands back a stale copy, so polling alone does not make a clock.
+    The app (yf/m1.java:348) takes the device value as a seed and moves it
+    locally, re-syncing only when a fresh value differs by more than 3 s.
+    Used by the Remaining time / Time on sensors and the Run timer number.
+    Host entities call clock.resync(st, device_value) on every coordinator
+    update and read clock.value().
+    """
+
+    def __init__(self, direction: int, coordinator: Any, did: str) -> None:
+        self._dir = direction                  # -1 counts down, +1 counts up
+        self._coordinator = coordinator
+        self._did = did
+        self._seed: int | None = None          # device value at _seed_at
+        self._seed_at: float = 0.0             # monotonic
+        self._last_device: int | None = None
+        self.was_on = False
+
+    def value(self) -> int | None:
+        if self._seed is None:
+            return None
+        return max(0, self._seed + self._dir * int(time.monotonic() - self._seed_at))
+
+    def resync(self, st: dict[str, Any], device: int) -> None:
+        on = bool(st.get("on"))
+        local = self.value()
+        if self._dir < 0:
+            hint = self._coordinator.run_hint.get(self._did)
+            hint_newer = bool(hint and hint[1] > self._seed_at)
+            if hint_newer and on and hint:
+                # we just asked for a timed run; the cloud copy may still be
+                # the previous run's, so seed from what we requested
+                device = max(device, hint[0] - int(time.monotonic() - hint[1]))
+            seed = next_seed(device, local, on, self._last_device, hint_newer)
+        else:
+            # up-counter: a stale repeat is LOWER than the local clock, so a
+            # fresh value is one that moved ahead; also re-seed on off -> on
+            if not on:
+                seed = 0
+            elif local is None or not self.was_on or device > local + 3:
+                seed = device
+            else:
+                seed = None
+        self._last_device = device
+        self.was_on = on
+        if seed is not None:
+            self._seed, self._seed_at = seed, time.monotonic()
