@@ -24,7 +24,7 @@ This is unofficial and not affiliated with Switcher.
 | Setup | Discovers devices on the network; newer devices need a username and token from Switcher | Sign in with your app account; every device on the account appears, new ones while running |
 | On Wall boiler | No, control is rejected by the device | Yes, verified |
 | Other devices | Plugs, Touch/V2/V4/Mini boilers, Runners, Breeze, lights; field tested by many users | Same families, mapped from the app's code and cross-checked against aioswitcher; experimental |
-| Boiler entities | switch, remaining time and auto shutdown sensors, `turn_on_with_timer` and `set_auto_off` services | switch, water heater, run timer number, auto shutdown number, remaining time and time on sensors that tick every second, the same two services |
+| Boiler entities | switch, remaining time and auto shutdown sensors, `turn_on_with_timer` and `set_auto_off` services | switch, water heater, run timer number, auto shutdown number, remaining time and time on sensors that tick every second (as "X minutes, Y seconds"), the same two services |
 | Breeze (AC) | Full climate entity with the IR code set | Temperature sensor only |
 | Sensors | Power (W), current (A), temperature | Power (W), current (A), energy (kWh), temperature |
 | Updates | Device broadcasts every few seconds | Cloud push when something changes, plus a poll every 60 s (15 s while a boiler is on) |
@@ -113,8 +113,8 @@ Entity ids come from the device name in the Switcher app. Each cloud device beco
 | `sensor` "Power" | energy-reporting families | Watts. aioswitcher reads the same field as watts. |
 | `sensor` "Current" | energy-reporting families | Amperes, watts divided by 220, the convention both the app and aioswitcher use. |
 | `sensor` "Energy" | energy-reporting families | kWh, total increasing, suitable for the Energy dashboard. The On Wall reports 0 here. |
-| `sensor` "Remaining time" | boilers and the Heater | Seconds until the device switches itself off. Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. 0 when off. |
-| `sensor` "Time on" | boilers and the Heater | Seconds since the device switched on, from the device's own counter, ticking every second. 0 when off. |
+| `sensor` "Remaining time" | boilers and the Heater | Time until the device switches itself off, as "X minutes, Y seconds" (the raw value is the `seconds` attribute). Ticks every second, seeded from the device and re-synced on each poll, the way the app does it. "0 seconds" when off. |
+| `sensor` "Time on" | boilers and the Heater | Time since the device switched on, from the device's own counter, same format and `seconds` attribute, ticking every second. "0 seconds" when off. |
 | `sensor` "Temperature" | Breeze | Room temperature from the Breeze's own sensor. |
 | `cover` | Runners, runner lines | Open / close / stop / position. Open and close are position 100 and 0, like `switcher_kis`. Device class shutter. |
 | `light` | Light SL01/02/03, S11/S12 light lines | On/off per line. |

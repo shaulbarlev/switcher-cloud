@@ -295,3 +295,19 @@ def test_auto_shutdown_range_by_family():
     assert devices.product_name("0F06", devices.Family.MIX) == "Light SL03"
     assert devices.classify("0E01")[0] is devices.Family.AIRCON
     assert devices.product_name("0C02", devices.Family.CURTAIN) == "Runner Mini"
+
+
+def test_format_duration():
+    # sensor.py imports Home Assistant, which the tests do not have; lift the
+    # pure helper out of the source instead
+    import pathlib
+    src = (pathlib.Path(__file__).parent.parent / "custom_components/switcher_cloud/sensor.py").read_text()
+    start = src.index("def format_duration"); end = src.index("\n\n\n", start)
+    ns = {}
+    exec(src[start:end], ns)
+    f = ns["format_duration"]
+    assert f(0) == "0 seconds"
+    assert f(1) == "1 second"
+    assert f(61) == "1 minute, 1 second"
+    assert f(1500) == "25 minutes, 0 seconds"
+    assert f(-5) == "0 seconds"

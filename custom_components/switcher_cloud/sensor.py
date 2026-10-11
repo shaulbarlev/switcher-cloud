@@ -74,21 +74,19 @@ SENSORS: tuple[SwitcherSensorDescription, ...] = (
     SwitcherSensorDescription(
         key="time_remaining",
         translation_key="time_remaining",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        # Seconds until the device switches itself off. Ticks down locally
-        # between polls; see SwitcherCloudTicker for how the seed is chosen.
-        # Shown as "Remaining time", the switcher_kis name for the same quantity.
+        # Time until the device switches itself off, shown as "X minutes, Y
+        # seconds" (the raw seconds are the `seconds` attribute). Ticks down
+        # locally between polls; see SwitcherCloudTicker for how the seed is
+        # chosen. Shown as "Remaining time", the switcher_kis name.
         value_fn=lambda st: (st.get("remaining") or 0) if st.get("on") else 0,
         present=lambda st: st.get("timed") and st.get("remaining") is not None,
     ),
     SwitcherSensorDescription(
         key="time_on",
         translation_key="time_on",
-        device_class=SensorDeviceClass.DURATION,
-        native_unit_of_measurement=UnitOfTime.SECONDS,
-        # Seconds since the device switched on (device counter, i32@25 on the
-        # On Wall). Ticks up locally between polls. 0 while off, like the app.
+        # Time since the device switched on (device counter, i32@25 on the On
+        # Wall), same "X minutes, Y seconds" text with a `seconds` attribute.
+        # Ticks up locally between polls. 0 while off, like the app.
         value_fn=lambda st: (st.get("secs_on") or 0) if st.get("on") else 0,
         present=lambda st: st.get("timed") and st.get("secs_on") is not None,
     ),
@@ -155,6 +153,16 @@ class SwitcherCloudSensor(SwitcherCloudEntity, SensorEntity):
 
 
 TICKING = {"time_remaining": -1, "time_on": +1}   # key -> tick direction per second
+
+
+def format_duration(seconds: int) -> str:
+    """0 -> "0 seconds", 61 -> "1 minute, 1 second", 1500 -> "25 minutes, 0 seconds"."""
+    seconds = max(0, int(seconds))
+    m, s = divmod(seconds, 60)
+    sec = f"{s} second" + ("" if s == 1 else "s")
+    if m == 0:
+        return sec
+    return f"{m} minute" + ("" if m == 1 else "s") + f", {sec}"
 
 
 class SwitcherCloudTicker(SwitcherCloudSensor):
@@ -234,8 +242,15 @@ class SwitcherCloudTicker(SwitcherCloudSensor):
         if self._was_on and self.available:
             self.async_write_ha_state()
 
-    @property
-    def native_value(self) -> float | int | None:
+    def _seconds(self) -> int:
         if not self._st().get("on"):
             return 0
-        return self._local_value()
+        return self._local_value() or 0
+
+    @property
+    def native_value(self) -> str:
+        return format_duration(self._seconds())
+
+    @property
+    def extra_state_attributes(self) -> dict[str, int]:
+        return {"seconds": self._seconds()}
