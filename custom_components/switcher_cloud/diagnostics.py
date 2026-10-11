@@ -21,6 +21,7 @@ async def async_get_config_entry_diagnostics(
             "last_update_success": coordinator.last_update_success,
             "update_interval": str(coordinator.update_interval),
         },
+        "connection": dict(coordinator.client.stats),
         "devices": {
             f"device_{i}": async_redact_data(st, TO_REDACT)
             for i, st in enumerate((coordinator.data or {}).values())

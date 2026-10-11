@@ -37,6 +37,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CONFIRM_INTERVAL = 2.0     # s to wait for a push before each confirm poll after a command
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
+RESET_AFTER_FAILURES = 3   # consecutive failed polls before a hard client reset
 ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
                            # re-syncs the countdown seed (the cloud updates it rarely)
 
@@ -63,6 +64,7 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         self._command_locks: dict[str, asyncio.Lock] = {}
         # did -> event set by any 0x0103 push while a confirm loop waits on it
         self._push_events: dict[str, asyncio.Event] = {}
+        self._failures = 0
         # did -> (seconds, monotonic time) of the last timed run we requested;
         # the countdown sensor seeds from it so an extended run is not clipped
         # by a stale cloud value.
@@ -260,8 +262,17 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             # Poll fast while a boiler is running so the remaining-time countdown
             # ticks; drop back to the slow interval once everything is off.
             self._apply_scan_interval(data)
+            self._failures = 0
             return data
         except SwitcherAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001 - any transport/parse error = failed poll
+            # The client reconnects on its own; if polls still fail several
+            # times in a row something is wedged, so force a fresh socket
+            # and listener. A reload did exactly this by hand once.
+            self._failures += 1
+            if self._failures % RESET_AFTER_FAILURES == 0:
+                _LOGGER.warning("%s polls failed in a row (%s); resetting the cloud connection",
+                                self._failures, err)
+                await self.hass.async_add_executor_job(self.client.reset)
             raise UpdateFailed(str(err)) from err

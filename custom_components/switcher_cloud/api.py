@@ -170,6 +170,8 @@ def parse_push(body: bytes) -> dict | None:
 # ---- client ---------------------------------------------------------------------
 
 HEARTBEAT_INTERVAL = 25       # app: 0x1104 every ~10 s; we can be gentler
+DEAD_AFTER = 90               # s without any received frame = dead session, reconnect
+RESET_AFTER_TIMEOUTS = 2      # consecutive request timeouts before forcing a reconnect
 PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
 # login errcodes that mean "credentials wrong" (app ReuestError strings:
 # 5 account not registered, 11 wrong password, 13 account error)
@@ -195,6 +197,7 @@ class SwitcherClient:
         self.uid = 0
         self.comm_key = b"\x00" * 32
         self._send_lock = threading.Lock()
+        self._listener_lock = threading.Lock()
         self._pending: dict[int, queue.Queue] = {}
         self.auth_error: SwitcherAuthError | None = None
         self._warned_types: set = set()
@@ -203,6 +206,14 @@ class SwitcherClient:
         self._stopping = threading.Event()
         self._on_push = None                 # callable(dict) in caller's thread
         self._on_reconnect = None            # callable() in listener thread
+        # connection health; the app's client (com/ogemray/server/p.java) does
+        # the same: remember when the last frame arrived and give up on the
+        # socket after two unanswered heartbeats
+        self._ready = threading.Event()      # set once login on the current socket succeeded
+        self._last_rx = 0.0
+        self._timeouts = 0                   # consecutive request timeouts
+        self.stats: dict[str, Any] = {"reconnects": 0, "last_error": None,
+                                      "connected_at": None, "last_rx": None}
 
     # -- serial ------------------------------------------------------------------
     def _next_serial(self) -> int:
@@ -228,6 +239,8 @@ class SwitcherClient:
             if not chunk:
                 raise ConnectionError("closed during body")
             rest += chunk
+        self._last_rx = time.time()
+        self.stats["last_rx"] = self._last_rx
         return hdr + rest
 
     def _raw_send(self, cmd: int, body: bytes, *, encrypted: bool = True,
@@ -247,7 +260,8 @@ class SwitcherClient:
         return serial
 
     def connect(self) -> None:
-        """Open TCP + login (0x1102, version 2.50)."""
+        """Open TCP + login (0x1102, version 2.50). `_ready` is only set once the
+        login reply is in, so request() never sends on a half-set-up socket."""
         self.close()
         self._sock = socket.create_connection((HOST, PORT), timeout=15)
         self._serial = 1000
@@ -265,9 +279,13 @@ class SwitcherClient:
         info = _parse_login_reply(_aes_dec(p["body"]))
         self.session, self.uid, self.comm_key = (
             info["session"], info["uid"], info["comm_key"])
+        self._timeouts = 0
+        self.stats["connected_at"] = time.time()
+        self._ready.set()
         _LOGGER.debug("logged in session=%s uid=%s", self.session, self.uid)
 
     def close(self) -> None:
+        self._ready.clear()
         if self._sock:
             with contextlib.suppress(OSError):
                 self._sock.shutdown(socket.SHUT_RDWR)   # wake a blocked recv
@@ -277,16 +295,19 @@ class SwitcherClient:
 
     # -- listener thread (realtime channel) --------------------------------------
     def start_listener(self, on_push=None, on_reconnect=None) -> None:
-        """Start the receive thread if it is not already running. Returns at once."""
-        self._on_push = on_push or self._on_push
-        self._on_reconnect = on_reconnect or self._on_reconnect
-        if self._listener and self._listener.is_alive():
-            return
-        self._stopping.clear()
-        self.auth_error = None
-        self._listener = threading.Thread(
-            target=self._listener_loop, name="switcher-cloud-listener", daemon=True)
-        self._listener.start()
+        """Start the receive thread if it is not already running. Returns at once.
+        Locked: two callers racing here would start two listeners that fight
+        over the socket."""
+        with self._listener_lock:
+            self._on_push = on_push or self._on_push
+            self._on_reconnect = on_reconnect or self._on_reconnect
+            if self._listener and self._listener.is_alive():
+                return
+            self._stopping.clear()
+            self.auth_error = None
+            self._listener = threading.Thread(
+                target=self._listener_loop, name="switcher-cloud-listener", daemon=True)
+            self._listener.start()
 
     def stop_listener(self) -> None:
         self._stopping.set()
@@ -301,7 +322,8 @@ class SwitcherClient:
                     self.connect()
                     s = self._sock
                     if reconnects:
-                        _LOGGER.info("switcher connection re-established")
+                        _LOGGER.warning("switcher connection re-established after %s attempt(s)", reconnects)
+                        self.stats["reconnects"] += 1
                     reconnects = 0
                     if self._on_reconnect:
                         try:
@@ -314,6 +336,17 @@ class SwitcherClient:
                 p = parse_packet(self._recv_packet())
                 self._dispatch(p)
             except socket.timeout:
+                # Idle. The app's client gives up after two unanswered heartbeats;
+                # same here: if nothing at all has arrived for DEAD_AFTER seconds
+                # (our own polls reply within 60 s when healthy) the session is
+                # dead even though TCP looks open. Reconnect.
+                if self._last_rx and time.time() - self._last_rx > DEAD_AFTER:
+                    self._on_lost(ConnectionError(
+                        f"no frame received for {int(time.time() - self._last_rx)}s"))
+                    reconnects += 1
+                    if self._stopping.wait(3):
+                        break
+                    continue
                 with self._send_lock, contextlib.suppress(OSError):
                     self._raw_send(0x1104, b"")       # heartbeat on idle
             except SwitcherAuthError as err:
@@ -325,14 +358,20 @@ class SwitcherClient:
             except Exception as err:  # noqa: BLE001
                 if self._stopping.is_set():
                     break
-                self.close()
                 reconnects += 1
                 delay = min(3 * reconnects, 30)
-                # Log a warning once, then debug. An overnight outage should not fill the log.
-                log = _LOGGER.warning if reconnects == 1 else _LOGGER.debug
-                log("switcher connection lost (%s); retry in %ss", err, delay)
+                self._on_lost(err, reconnects, delay)
                 if self._stopping.wait(delay):
                     break
+
+    def _on_lost(self, err: Exception, attempt: int = 1, delay: int = 3) -> None:
+        self.close()
+        self._fail_pending(SwitcherApiError(f"connection lost: {err}"))
+        self.stats["last_error"] = f"{time.strftime('%H:%M:%S')} {err}"
+        # Warn on the first loss and every 10th failed attempt, so an outage
+        # leaves a trace without filling the log.
+        log = _LOGGER.warning if attempt == 1 or attempt % 10 == 0 else _LOGGER.debug
+        log("switcher connection lost (%s); attempt %s, retry in %ss", err, attempt, delay)
 
     def _fail_pending(self, err: Exception) -> None:
         for q in list(self._pending.values()):
@@ -379,8 +418,9 @@ class SwitcherClient:
         while time.time() < deadline:
             if self.auth_error:
                 raise self.auth_error
-            if self._sock is None:      # listener still connecting
-                time.sleep(0.2)
+            # wait for a logged-in socket; never send on one that is still
+            # connecting, the server kicks a session that does that (errcode 6)
+            if not self._ready.wait(timeout=0.5):
                 continue
             q: queue.Queue = queue.Queue(maxsize=2)
             try:
@@ -395,18 +435,33 @@ class SwitcherClient:
                     self._pending.pop(serial, None)
                 if isinstance(r, Exception):
                     raise r
+                self._timeouts = 0
                 return r
             except SwitcherAuthError:
                 raise
             except queue.Empty:
-                # no reply in time: don't tear down the shared socket for everyone;
-                # the listener's heartbeat decides if the connection is really dead
+                # No reply in time. One timeout can be the server being slow;
+                # several in a row mean the session is dead even though TCP is
+                # open, so drop the socket and let the listener reconnect.
+                self._timeouts += 1
+                if self._timeouts >= RESET_AFTER_TIMEOUTS:
+                    _LOGGER.warning("%s requests timed out in a row; reconnecting", self._timeouts)
+                    self._timeouts = 0
+                    self.close()
                 raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}") from None
             except OSError as err:
                 self.close()
                 _LOGGER.debug("request 0x%04x failed (%s); reconnecting", cmd, err)
                 time.sleep(1)
         raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}")
+
+    def reset(self) -> None:
+        """Hard reset: drop the socket and make sure the listener is running.
+        The listener reconnects and re-logins on its own."""
+        _LOGGER.warning("switcher client reset requested")
+        self.close()
+        if self.auth_error is None and (self._listener is None or not self._listener.is_alive()):
+            self.start_listener()
 
     # -- high-level API ----------------------------------------------------------
     def get_devices(self) -> list[dict[str, Any]]:
@@ -508,8 +563,7 @@ class SwitcherClient:
         if self._listener is None or not self._listener.is_alive():
             self.start_listener()
         deadline = time.time() + timeout
-        while self._sock is None and time.time() < deadline:
-            time.sleep(0.2)
+        self._ready.wait(timeout=max(0.1, deadline - time.time()))
         q: queue.Queue = queue.Queue(maxsize=2)
         with self._send_lock:
             serial = self._raw_send(0x0E02, body, encrypted=False)
