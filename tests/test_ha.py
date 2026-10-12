@@ -146,3 +146,43 @@ async def test_failed_command_drops_the_optimistic_state(hass: HomeAssistant) ->
         await coord.async_set_switch(DID, True)
     assert (DID, 0) not in coord.pending                # back to the device's own state
     assert coord.data[DID]["on"] is False
+
+
+async def _confirm_run(hass, monkeypatch, readings):
+    """Drive _send_and_confirm against a fake cloud that answers `readings` in turn."""
+    import custom_components.switcher_cloud.coordinator as c
+
+    monkeypatch.setattr(c, "CONFIRM_INTERVAL", 0.01)
+    monkeypatch.setattr(c, "POWER_WAIT", 0.3)
+    coord = await _coordinator(hass, on=False)
+    polls = iter(readings)
+    calls = []
+
+    class Fake:
+        def send_control(self, body):
+            pass
+
+        def poll(self):
+            on, w = next(polls, readings[-1])
+            calls.append((on, w))
+            return {DID: {**coord.data[DID], "on": on, "power_raw": w}}
+
+    coord.client = Fake()
+    await coord._send_and_confirm(DID, b"", lambda s: s.get("on") is True)
+    return coord, calls
+
+
+async def test_confirm_waits_for_the_first_power_reading(hass, monkeypatch) -> None:
+    coord, calls = await _confirm_run(
+        hass, monkeypatch, [(False, 0), (True, 0), (True, 0), (True, 2600), (True, 2600)])
+    assert calls == [(False, 0), (True, 0), (True, 0), (True, 2600)]   # stops at the reading
+    assert coord.data[DID]["power_raw"] == 2600
+
+
+async def test_confirm_gives_up_on_a_real_zero(hass, monkeypatch) -> None:
+    """Thermostat open: 0 W is the truth; the wait is bounded."""
+    import time
+    t = time.monotonic()
+    coord, calls = await _confirm_run(hass, monkeypatch, [(True, 0)])
+    assert time.monotonic() - t < 2
+    assert coord.data[DID]["on"] is True and coord.data[DID]["power_raw"] == 0

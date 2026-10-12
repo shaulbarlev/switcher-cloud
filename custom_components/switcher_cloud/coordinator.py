@@ -43,6 +43,8 @@ CONFIRM_INTERVAL = 0.4     # s between confirm polls while the device is about t
                            # 0.4 s catches the change within one interval of it happening.
 CONFIRM_FAST_FOR = 8.0     # s of fast polling; after that, CONFIRM_SLOW_INTERVAL
 CONFIRM_SLOW_INTERVAL = 2.0
+POWER_WAIT = 8.0           # s of fast polling after a confirmed switch-on for the first
+                           # power reading (On Wall: it lands ~3.5 s after the confirm)
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
 RESET_AFTER_FAILURES = 3   # consecutive failed polls before a hard client reset
 ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
@@ -265,6 +267,7 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         # back to a poll every CONFIRM_INTERVAL if it does not come.
         start = self.hass.loop.time()
         deadline = start + CONFIRM_TIMEOUT
+        power_wait = False
         while self.hass.loop.time() < deadline:
             fast = self.hass.loop.time() - start < CONFIRM_FAST_FOR
             with contextlib.suppress(TimeoutError):
@@ -278,7 +281,19 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 continue
             self._apply_scan_interval(data)
             self.async_set_updated_data(data)
-            if done is None or done(data.get(did, {})):
+            st = data.get(did, {})
+            if done is None or done(st):
+                # Switched on, but the snapshot that confirmed it was taken before
+                # the device measured anything (power 0). The reading follows a few
+                # seconds later; keep the fast polls going until it shows rather
+                # than leave it to the regular poll. Capped: 0 can also be real,
+                # when the boiler's thermostat is open.
+                if st.get("on") and st.get("power_raw") == 0 and not power_wait:
+                    power_wait = True
+                    deadline = min(deadline, self.hass.loop.time() + POWER_WAIT)
+                    continue
+                if power_wait and st.get("power_raw") == 0:
+                    continue
                 break
 
     # -- scheduled poll ------------------------------------------------------------
