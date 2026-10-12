@@ -35,7 +35,14 @@ from .devices import (
 
 _LOGGER = logging.getLogger(__name__)
 
-CONFIRM_INTERVAL = 2.0     # s to wait for a push before each confirm poll after a command
+CONFIRM_INTERVAL = 0.4     # s between confirm polls while the device is about to change.
+                           # Measured on the On Wall: the server acks a command in ~0.4 s
+                           # (0x0201 push), but its status still shows the old state for
+                           # up to ~2 s after, and no second push comes when it changes.
+                           # Waiting 2 s per poll made a toggle take ~2.6 s; polling at
+                           # 0.4 s catches the change within one interval of it happening.
+CONFIRM_FAST_FOR = 8.0     # s of fast polling; after that, CONFIRM_SLOW_INTERVAL
+CONFIRM_SLOW_INTERVAL = 2.0
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
 RESET_AFTER_FAILURES = 3   # consecutive failed polls before a hard client reset
 ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
@@ -75,6 +82,11 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         # came through the run timer number or the water heater rather than the
         # switch itself (HA only hands the context to the entity it targeted).
         self.command_context: dict[str, tuple[Context, float]] = {}
+        # (did, gang) -> the on/off a command asked for, until the device
+        # reports it or the command fails. The switch shows it at once; the
+        # readings (power, timers) stay the device's own and arrive with the
+        # confirm, so a quick flip of the switch never fakes a measurement.
+        self.pending: dict[tuple[str, int], bool] = {}
         self._refresh_debounce_task: asyncio.Task | None = None
         self._realtime_started = False
 
@@ -146,6 +158,17 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         `context` is the HA context of the calling service, see command_context."""
         if context is not None:
             self.command_context[did] = (context, time.monotonic())
+        key = (did, gang or 0)
+        self.pending[key] = on
+        self.async_update_listeners()
+        try:
+            await self._set_switch(did, on, gang, run_seconds)
+        finally:
+            # Confirmed, failed or timed out: from here the device's own state rules.
+            if self.pending.pop(key, None) is not None:
+                self.async_update_listeners()
+
+    async def _set_switch(self, did: str, on: bool, gang: int | None, run_seconds: int) -> None:
         async with self._command_locks.setdefault(did, asyncio.Lock()):
             st = (self.data or {}).get(did)
             if st is None:
@@ -240,10 +263,13 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
         # the scheduled poll), publishing once when the requested state shows.
         # The device ack arrives as a 0x0103 push, so wait for that and fall
         # back to a poll every CONFIRM_INTERVAL if it does not come.
-        deadline = self.hass.loop.time() + CONFIRM_TIMEOUT
+        start = self.hass.loop.time()
+        deadline = start + CONFIRM_TIMEOUT
         while self.hass.loop.time() < deadline:
+            fast = self.hass.loop.time() - start < CONFIRM_FAST_FOR
             with contextlib.suppress(TimeoutError):
-                await asyncio.wait_for(event.wait(), CONFIRM_INTERVAL)
+                await asyncio.wait_for(event.wait(),
+                                       CONFIRM_INTERVAL if fast else CONFIRM_SLOW_INTERVAL)
             event.clear()
             try:
                 data = await self.hass.async_add_executor_job(self.client.poll)

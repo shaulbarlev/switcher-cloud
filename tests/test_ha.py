@@ -100,3 +100,49 @@ def test_power_is_zero_while_off() -> None:
     assert watts({"on": True, "power_raw": 0}) == 0          # thermostat open: real
     assert watts({"on": None, "power_raw": 2693}) == 2693    # unknown state: pass it on
     assert watts({"on": False}) is None                      # family without the field
+
+
+async def _coordinator(hass: HomeAssistant, on: bool):
+    from custom_components.switcher_cloud.const import CONF_ACCOUNT, CONF_PASSWORD
+    from custom_components.switcher_cloud.coordinator import SwitcherCloudCoordinator
+
+    entry = MockConfigEntry(domain=DOMAIN, data={CONF_ACCOUNT: "a@b.c", CONF_PASSWORD: "x"})
+    entry.add_to_hass(hass)
+    coord = SwitcherCloudCoordinator(hass, entry)
+    coord.async_set_updated_data({DID: {"family": "on_wall", "on": on, "did_int": 1,
+                                        "device_pwd": "p", "power_raw": 0}})
+    return coord
+
+
+async def test_switch_is_optimistic_until_the_device_answers(hass: HomeAssistant) -> None:
+    """The commanded state shows before the cloud confirms; readings do not move."""
+    coord = await _coordinator(hass, on=False)
+    seen: list[tuple] = []
+    coord.async_add_listener(lambda: seen.append(
+        (coord.pending.get((DID, 0)), coord.data[DID]["on"])))
+
+    async def fake_set(did, on, gang, run_seconds):
+        assert coord.pending[(DID, 0)] is True          # shown while the command is in flight
+        assert coord.data[DID]["on"] is False           # ...while the device data is untouched
+        coord.async_set_updated_data({DID: {**coord.data[DID], "on": True, "power_raw": 2600}})
+
+    coord._set_switch = fake_set
+    await coord.async_set_switch(DID, True)
+    assert (DID, 0) not in coord.pending
+    assert seen[0] == (True, False)                     # first update: optimistic, data still off
+    assert coord.data[DID]["on"] is True
+
+
+async def test_failed_command_drops_the_optimistic_state(hass: HomeAssistant) -> None:
+    from homeassistant.exceptions import HomeAssistantError
+
+    coord = await _coordinator(hass, on=False)
+
+    async def fail(did, on, gang, run_seconds):
+        raise HomeAssistantError("cloud said no")
+
+    coord._set_switch = fail
+    with pytest.raises(HomeAssistantError):
+        await coord.async_set_switch(DID, True)
+    assert (DID, 0) not in coord.pending                # back to the device's own state
+    assert coord.data[DID]["on"] is False

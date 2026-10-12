@@ -97,6 +97,11 @@ class SwitcherCloudSwitch(SwitcherCloudEntity, SwitchEntity):
 
     @property
     def is_on(self) -> bool | None:
+        # Optimistic: a commanded state shows at once, until the device confirms or the
+        # command fails. Only the switch does this; power and timers wait for the device.
+        pending = self.coordinator.pending.get((self._did, self._gang or 0))
+        if pending is not None:
+            return pending
         st = self._st()
         if self._gang and st.get("gangs"):
             return bool(st["gangs"][self._gang])
