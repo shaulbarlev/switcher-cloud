@@ -16,6 +16,7 @@ import contextlib
 import json
 import logging
 import queue
+import random
 import socket
 import struct
 import threading
@@ -185,11 +186,18 @@ PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
 # 5 account not registered, 11 wrong password, 13 account error)
 AUTH_ERRCODES = {5, 11, 13}
 AUTO_SHUTDOWN_TTL = 600       # s; the 0x0C14 value only changes on a write
-# After a refused login, wait 30 s, then double each time up to 15 min. The
-# server kept answering errcode 12 to a login every 30 s for over half an hour
-# (2026-10-14); retrying that fast only adds to whatever made it refuse.
-LOGIN_BACKOFF_FIRST = 30
-LOGIN_BACKOFF_MAX = 900
+# Reconnect pacing, the aux-cloud shape: start short, double per failed
+# attempt, cap, add up to 20 % jitter, back to the start once logged in.
+RETRY_FIRST = 5               # s, after a lost connection or a network error
+RETRY_MAX = 60
+LOGIN_BACKOFF_FIRST = 60      # s, after the server refused a login
+LOGIN_BACKOFF_MAX = 900       # with a clean identity a refusal is the server's own
+                              # doing (outage, block); hammering it helps nobody
+
+
+def _backoff(first: float, cap: float, attempt: int) -> float:
+    """first, 2*first, 4*first ... up to cap, times 1.0-1.2 jitter."""
+    return min(first * 2 ** max(0, attempt - 1), cap) * random.uniform(1, 1.2)  # noqa: S311
 
 
 class SwitcherClient:
@@ -276,10 +284,21 @@ class SwitcherClient:
 
     def connect(self) -> None:
         """Open TCP + login (0x1102, version 2.50). `_ready` is only set once the
-        login reply is in, so request() never sends on a half-set-up socket."""
+        login reply is in, so request() never sends on a half-set-up socket.
+
+        Every login starts from a blank identity, exactly like a brand-new
+        client. The packet header carries session, uid (relation id) and the
+        session key used for its trailer; left over from the previous session
+        they make the server refuse the login with errcode 12, for as long as
+        the client lives. Measured against the real server on 2026-10-14
+        (v1.0.6 client): fresh login OK, re-login on the same client refused
+        with 12 twice, the same client with the identity cleared OK. Before
+        this, every dropped connection locked the integration out until a
+        reload."""
         self.close()
-        self._sock = socket.create_connection((HOST, PORT), timeout=15)
+        self.session, self.uid, self.comm_key = 0, 0, b"\x00" * 32
         self._serial = 1000
+        self._sock = socket.create_connection((HOST, PORT), timeout=15)
         self._raw_send(0x1102, _login_body(self._account, self._password,
                                            int(time.time())),
                        encrypted=True, version=b"\x02\x32", control=0x0100)
@@ -333,6 +352,9 @@ class SwitcherClient:
         self.close()
 
     def _listener_loop(self) -> None:
+        """The only place that logs in. Everything else that finds the connection
+        bad closes the socket at most; this loop notices and reconnects, paced
+        by _backoff."""
         refusals = 0
         reconnects = 0
         while not self._stopping.is_set():
@@ -362,10 +384,12 @@ class SwitcherClient:
                 # (our own polls reply within 60 s when healthy) the session is
                 # dead even though TCP looks open. Reconnect.
                 if self._last_rx and time.time() - self._last_rx > DEAD_AFTER:
-                    self._on_lost(ConnectionError(
-                        f"no frame received for {int(time.time() - self._last_rx)}s"))
                     reconnects += 1
-                    if self._stopping.wait(3):
+                    delay = _backoff(RETRY_FIRST, RETRY_MAX, reconnects)
+                    self._on_lost(ConnectionError(
+                        f"no frame received for {int(time.time() - self._last_rx)}s"),
+                        reconnects, delay)
+                    if self._stopping.wait(delay):
                         break
                     continue
                 with self._send_lock, contextlib.suppress(OSError):
@@ -385,21 +409,21 @@ class SwitcherClient:
                         self.login_rejected = (err.errcode, time.time())
                         refusals = 0
                     refusals += 1
-                    delay = min(LOGIN_BACKOFF_FIRST * 2 ** (refusals - 1), LOGIN_BACKOFF_MAX)
+                    delay = _backoff(LOGIN_BACKOFF_FIRST, LOGIN_BACKOFF_MAX, refusals)
                 else:
-                    delay = min(3 * reconnects, 30)
+                    delay = _backoff(RETRY_FIRST, RETRY_MAX, reconnects)
                 self._on_lost(err, reconnects, delay)
                 if self._stopping.wait(delay):
                     break
 
-    def _on_lost(self, err: Exception, attempt: int = 1, delay: int = 3) -> None:
+    def _on_lost(self, err: Exception, attempt: int = 1, delay: float = RETRY_FIRST) -> None:
         self.close()
         self._fail_pending(SwitcherApiError(f"connection lost: {err}"))
         self.stats["last_error"] = f"{time.strftime('%H:%M:%S')} {err}"
         # Warn on the first loss and every 10th failed attempt, so an outage
         # leaves a trace without filling the log.
         log = _LOGGER.warning if attempt == 1 or attempt % 10 == 0 else _LOGGER.debug
-        log("switcher connection lost (%s); attempt %s, retry in %ss", err, attempt, delay)
+        log("switcher connection lost (%s); attempt %s, retry in %.0fs", err, attempt, delay)
 
     def _fail_pending(self, err: Exception) -> None:
         for q in list(self._pending.values()):
@@ -483,12 +507,12 @@ class SwitcherClient:
                 time.sleep(1)
         raise SwitcherApiError(f"timeout waiting for 0x{cmd:04x}")
 
-    def reset(self) -> None:
-        """Hard reset: drop the socket and make sure the listener is running.
-        The listener reconnects and re-logins on its own."""
-        _LOGGER.warning("switcher client reset requested")
-        self.close()
-        if self.auth_error is None and (self._listener is None or not self._listener.is_alive()):
+    def ensure_listener(self) -> None:
+        """Restart the listener if its thread died (it should not). Never touches
+        a live connection: reconnecting is the listener's job alone."""
+        if self.auth_error is None and not self._stopping.is_set() and (
+                self._listener is None or not self._listener.is_alive()):
+            _LOGGER.warning("switcher listener was not running; starting it")
             self.start_listener()
 
     # -- high-level API ----------------------------------------------------------

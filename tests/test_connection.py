@@ -202,3 +202,74 @@ def test_refused_login_backs_off_and_recovers(monkeypatch):
     finally:
         c.stop_listener()
         cloud.stop.set()
+
+
+class StaleIdentityCloud(FakeCloud):
+    """The real server's rule, measured 2026-10-14: a login signed with the
+    previous session's key is refused with errcode 12. The first connection is
+    dropped by the server after one reply, as on the 18:58 outage."""
+
+    def __init__(self):
+        super().__init__(dead_after_replies=10**6)
+        self.logins_ok = 0
+        self.refused = 0
+        self.connections = 0
+
+    def _serve(self, conn):
+        conn.settimeout(10)
+        with self.lock:
+            self.connections += 1
+            first = self.connections == 1
+        try:
+            while not self.stop.is_set():
+                hdr = conn.recv(40)
+                if not hdr or len(hdr) < 40:
+                    return
+                total = struct.unpack_from("<H", hdr, 2)[0]
+                body = b""
+                while len(hdr) + len(body) < total:
+                    body += conn.recv(total - 40 - len(body))
+                pkt = hdr + body
+                p = api.parse_packet(pkt)
+                if p["cmd"] == 0x1102:
+                    # measured: a trailer signed with a previous session's key is
+                    # refused (session and uid alone did not matter once the key did)
+                    if pkt[-4:] != api._crc_trailer(pkt[:-4], b"\x00" * 32):
+                        with self.lock:
+                            self.refused += 1
+                        h = bytearray(api.build_packet(0x1102, b"", p["serial"], 0)[:40])
+                        h[15] = 12
+                        conn.sendall(bytes(h) + api._crc_trailer(bytes(h), b"\x00" * 32))
+                        return
+                    with self.lock:
+                        self.logins_ok += 1
+                    # a real session key, so a stale one is not all zeros
+                    reply = struct.pack("<ii", 0x1234, 42) + b"\x11" * 32
+                    conn.sendall(api.build_packet(0x1102, api._aes_enc(reply), p["serial"], 0x1234))
+                    continue
+                conn.sendall(api.build_packet(p["cmd"], b'{"DevList":[]}', p["serial"], 0x1234))
+                if first and p["cmd"] != 0x1104:
+                    return                                   # server drops the session
+        except OSError:
+            return
+        finally:
+            conn.close()
+
+
+def test_dropped_connection_relogs_in_with_a_clean_identity(monkeypatch):
+    monkeypatch.setattr(api, "RETRY_FIRST", 0.05, raising=False)
+    cloud = StaleIdentityCloud()
+    cloud.start()
+    c = _client(cloud.port)
+    try:
+        c.start_listener()
+        assert c.get_devices() == []                         # first session, then dropped
+        deadline = time.time() + 5
+        while cloud.logins_ok < 2 and time.time() < deadline:
+            time.sleep(0.05)
+        assert cloud.refused == 0, "re-login was signed with the old session key"
+        assert cloud.logins_ok == 2
+        assert c.get_devices() == []                         # usable again, no reload
+    finally:
+        c.stop_listener()
+        cloud.stop.set()

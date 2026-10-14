@@ -346,11 +346,9 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                 # on its own and logs in again when the server lets it.
                 self._login_issue(rejected)
                 raise UpdateFailed(f"Switcher cloud refuses the login (errcode {rejected[0]})") from err
-            # The client reconnects on its own; if polls still fail several
-            # times in a row something is wedged, so force a fresh socket
-            # and listener. A reload did exactly this by hand once.
+            # Reconnecting is the client's listener's job alone; a reset from
+            # here used to close the socket under it and cost another login.
+            # Only a listener thread that died is restarted.
             if self._failures % RESET_AFTER_FAILURES == 0:
-                _LOGGER.warning("%s polls failed in a row (%s); resetting the cloud connection",
-                                self._failures, err)
-                await self.hass.async_add_executor_job(self.client.reset)
+                await self.hass.async_add_executor_job(self.client.ensure_listener)
             raise UpdateFailed(str(err)) from err
