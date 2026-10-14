@@ -16,6 +16,7 @@ from homeassistant.exceptions import (
     HomeAssistantError,
     ServiceValidationError,
 )
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import SwitcherApiError, SwitcherAuthError, SwitcherClient
@@ -47,6 +48,7 @@ POWER_WAIT = 8.0           # s of fast polling after a confirmed switch-on for t
                            # power reading (On Wall: it lands ~3.5 s after the confirm)
 CONFIRM_TIMEOUT = 30.0     # s before giving up and letting the regular poll catch up
 RESET_AFTER_FAILURES = 3   # consecutive failed polls before a hard client reset
+LOGIN_ISSUE_AFTER = 300    # s of refused logins before a Repairs entry says so
 ACTIVE_SCAN_INTERVAL = 15  # s while any boiler is on: catches the self-off promptly and
                            # re-syncs the countdown seed (the cloud updates it rarely)
 
@@ -296,6 +298,24 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
                     continue
                 break
 
+    @callback
+    def _login_issue(self, rejected: tuple[int, float] | None) -> None:
+        """A Repairs entry while the cloud refuses the login for more than a few
+        minutes, so an outage says why instead of only greying the entities out."""
+        issue_id = f"login_rejected_{self.config_entry.entry_id}"
+        if rejected is None:
+            ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+            return
+        if time.time() - rejected[1] < LOGIN_ISSUE_AFTER:
+            return
+        ir.async_create_issue(
+            self.hass, DOMAIN, issue_id, is_fixable=False,
+            severity=ir.IssueSeverity.WARNING, translation_key="login_rejected",
+            translation_placeholders={
+                "errcode": str(rejected[0]),
+                "since": time.strftime("%H:%M", time.localtime(rejected[1])),
+            })
+
     # -- scheduled poll ------------------------------------------------------------
     @callback
     def _apply_scan_interval(self, data: dict[str, dict[str, Any]]) -> None:
@@ -313,14 +333,22 @@ class SwitcherCloudCoordinator(DataUpdateCoordinator[dict[str, dict[str, Any]]])
             # ticks; drop back to the slow interval once everything is off.
             self._apply_scan_interval(data)
             self._failures = 0
+            self._login_issue(None)
             return data
         except SwitcherAuthError as err:
             raise ConfigEntryAuthFailed(str(err)) from err
         except Exception as err:  # noqa: BLE001 - any transport/parse error = failed poll
+            self._failures += 1
+            rejected = self.client.login_rejected
+            if rejected:
+                # The server is up and answering, it refuses the login. A reset
+                # would only cost another refused login; the client backs off
+                # on its own and logs in again when the server lets it.
+                self._login_issue(rejected)
+                raise UpdateFailed(f"Switcher cloud refuses the login (errcode {rejected[0]})") from err
             # The client reconnects on its own; if polls still fail several
             # times in a row something is wedged, so force a fresh socket
             # and listener. A reload did exactly this by hand once.
-            self._failures += 1
             if self._failures % RESET_AFTER_FAILURES == 0:
                 _LOGGER.warning("%s polls failed in a row (%s); resetting the cloud connection",
                                 self._failures, err)

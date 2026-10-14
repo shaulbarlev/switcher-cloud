@@ -186,3 +186,43 @@ async def test_confirm_gives_up_on_a_real_zero(hass, monkeypatch) -> None:
     coord, calls = await _confirm_run(hass, monkeypatch, [(True, 0)])
     assert time.monotonic() - t < 2
     assert coord.data[DID]["on"] is True and coord.data[DID]["power_raw"] == 0
+
+
+async def test_refused_login_raises_a_repair_and_no_reset(hass) -> None:
+    import time
+
+    from homeassistant.helpers import issue_registry as ir
+    from homeassistant.helpers.update_coordinator import UpdateFailed
+
+    from custom_components.switcher_cloud.api import SwitcherApiError
+
+    coord = await _coordinator(hass, on=False)
+    resets = []
+
+    class Refused:
+        login_rejected = (12, time.time() - 600)
+
+        def poll(self):
+            raise SwitcherApiError("timeout waiting for 0x1343")
+
+        def reset(self):
+            resets.append(1)
+
+    coord.client = Refused()
+    for _ in range(4):                                   # past RESET_AFTER_FAILURES
+        with pytest.raises(UpdateFailed, match="errcode 12"):
+            await coord._async_update_data()
+    assert resets == []
+    issue_id = f"login_rejected_{coord.config_entry.entry_id}"
+    issue = ir.async_get(hass).async_get_issue(DOMAIN, issue_id)
+    assert issue is not None and issue.translation_placeholders["errcode"] == "12"
+
+    class Back:
+        login_rejected = None
+
+        def poll(self):
+            return {DID: {**coord.data[DID]}}
+
+    coord.client = Back()
+    await coord._async_update_data()
+    assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None

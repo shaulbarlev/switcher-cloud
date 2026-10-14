@@ -45,6 +45,14 @@ class SwitcherAuthError(SwitcherApiError):
     pass
 
 
+class SwitcherLoginRejected(SwitcherApiError):
+    """The server refused the login with a code that is not a credential error."""
+
+    def __init__(self, errcode: int) -> None:
+        super().__init__(f"login errcode={errcode}")
+        self.errcode = errcode
+
+
 # ---- framing ------------------------------------------------------------------
 
 def _crc16(data: bytes, init: int = 0x1021) -> int:
@@ -177,6 +185,11 @@ PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
 # 5 account not registered, 11 wrong password, 13 account error)
 AUTH_ERRCODES = {5, 11, 13}
 AUTO_SHUTDOWN_TTL = 600       # s; the 0x0C14 value only changes on a write
+# After a refused login, wait 30 s, then double each time up to 15 min. The
+# server kept answering errcode 12 to a login every 30 s for over half an hour
+# (2026-10-14); retrying that fast only adds to whatever made it refuse.
+LOGIN_BACKOFF_FIRST = 30
+LOGIN_BACKOFF_MAX = 900
 
 
 class SwitcherClient:
@@ -214,6 +227,8 @@ class SwitcherClient:
         self._timeouts = 0                   # consecutive request timeouts
         self.stats: dict[str, Any] = {"reconnects": 0, "last_error": None,
                                       "connected_at": None, "last_rx": None}
+        # (errcode, first refused at) while the server keeps refusing the login
+        self.login_rejected: tuple[int, float] | None = None
 
     # -- serial ------------------------------------------------------------------
     def _next_serial(self) -> int:
@@ -275,12 +290,16 @@ class SwitcherClient:
             # (server-side 1xx errors, 6 "refresh", 12 pre-auth gate) is transient
             if p["errcode"] in AUTH_ERRCODES:
                 raise SwitcherAuthError(f"login errcode={p['errcode']}")
-            raise SwitcherApiError(f"login errcode={p['errcode']}")
+            raise SwitcherLoginRejected(p["errcode"])
         info = _parse_login_reply(_aes_dec(p["body"]))
         self.session, self.uid, self.comm_key = (
             info["session"], info["uid"], info["comm_key"])
         self._timeouts = 0
         self.stats["connected_at"] = time.time()
+        if self.login_rejected:
+            _LOGGER.warning("switcher login accepted again after errcode %s for %ss",
+                            self.login_rejected[0], int(time.time() - self.login_rejected[1]))
+        self.login_rejected = None
         self._ready.set()
         _LOGGER.debug("logged in session=%s uid=%s", self.session, self.uid)
 
@@ -314,6 +333,7 @@ class SwitcherClient:
         self.close()
 
     def _listener_loop(self) -> None:
+        refusals = 0
         reconnects = 0
         while not self._stopping.is_set():
             try:
@@ -325,6 +345,7 @@ class SwitcherClient:
                         _LOGGER.warning("switcher connection re-established after %s attempt(s)", reconnects)
                         self.stats["reconnects"] += 1
                     reconnects = 0
+                    refusals = 0
                     if self._on_reconnect:
                         try:
                             self._on_reconnect()
@@ -359,7 +380,14 @@ class SwitcherClient:
                 if self._stopping.is_set():
                     break
                 reconnects += 1
-                delay = min(3 * reconnects, 30)
+                if isinstance(err, SwitcherLoginRejected):
+                    if self.login_rejected is None or self.login_rejected[0] != err.errcode:
+                        self.login_rejected = (err.errcode, time.time())
+                        refusals = 0
+                    refusals += 1
+                    delay = min(LOGIN_BACKOFF_FIRST * 2 ** (refusals - 1), LOGIN_BACKOFF_MAX)
+                else:
+                    delay = min(3 * reconnects, 30)
                 self._on_lost(err, reconnects, delay)
                 if self._stopping.wait(delay):
                     break

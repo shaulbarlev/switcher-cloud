@@ -146,5 +146,11 @@
         }
       }
     }
+  },
+  "issues": {
+    "login_rejected": {
+      "title": "Switcher cloud refuses the login",
+      "description": "Since {since} the Switcher cloud has refused every login with error code {errcode}. Your email and password were not rejected, so nothing needs re-entering; the integration keeps retrying, waiting longer each time (up to 15 minutes), and the devices come back by themselves once the cloud accepts it. If the Switcher app on your phone also fails, the cloud is down. If only Home Assistant is refused, attach the diagnostics download to an issue."
+    }
   }
 }

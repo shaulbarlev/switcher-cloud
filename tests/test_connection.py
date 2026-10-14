@@ -140,3 +140,65 @@ def test_repeated_timeouts_force_reconnect(monkeypatch):
         assert c.get_devices() == []
     finally:
         c.stop_listener(); srv.stop.set()
+
+
+class RefusingCloud(FakeCloud):
+    """Answers the first `refuse` logins with errcode 12, then lets the client in."""
+
+    def __init__(self, refuse: int):
+        super().__init__(dead_after_replies=10**6)
+        self.refuse = refuse
+        self.login_times: list[float] = []
+
+    def _serve(self, conn):
+        conn.settimeout(10)
+        try:
+            hdr = conn.recv(40)
+            total = struct.unpack_from("<H", hdr, 2)[0]
+            body = b""
+            while len(hdr) + len(body) < total:
+                body += conn.recv(total - 40 - len(body))
+            p = api.parse_packet(hdr + body)
+            assert p["cmd"] == 0x1102
+            with self.lock:
+                self.login_times.append(time.monotonic())
+                n = len(self.login_times)
+            if n <= self.refuse:
+                h = bytearray(api.build_packet(0x1102, b"", p["serial"], 0)[:40])
+                h[15] = 12                                   # errcode
+                hb = bytes(h)
+                conn.sendall(hb + api._crc_trailer(hb, b"\x00" * 32))
+                conn.close()
+                return
+            conn.sendall(api.build_packet(0x1102, api._aes_enc(LOGIN_OK), p["serial"], 0x1234))
+            while not self.stop.is_set():                    # accepted: stay connected
+                if not conn.recv(4096):
+                    return
+        except OSError:
+            return
+
+
+def test_refused_login_backs_off_and_recovers(monkeypatch):
+    monkeypatch.setattr(api, "LOGIN_BACKOFF_FIRST", 0.1)
+    monkeypatch.setattr(api, "LOGIN_BACKOFF_MAX", 0.4)
+    cloud = RefusingCloud(refuse=5)
+    cloud.start()
+    c = _client(cloud.port)
+    try:
+        c.start_listener()
+        deadline = time.time() + 10
+        while len(cloud.login_times) < 6 and time.time() < deadline:
+            if len(cloud.login_times) >= 2:
+                assert c.login_rejected is not None and c.login_rejected[0] == 12
+            time.sleep(0.02)
+        t = cloud.login_times
+        assert len(t) >= 6, t
+        gaps = [b - a for a, b in zip(t, t[1:6])]
+        # 0.1, 0.2, 0.4, 0.4, 0.4 (+ connect overhead): grows, then capped
+        assert gaps[0] < gaps[1] < gaps[2], gaps
+        assert 0.35 < gaps[3] < 0.8 and 0.35 < gaps[4] < 0.8, gaps
+        assert c._ready.wait(5)                              # sixth login accepted
+        assert c.login_rejected is None
+    finally:
+        c.stop_listener()
+        cloud.stop.set()
