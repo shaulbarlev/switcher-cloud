@@ -226,3 +226,55 @@ async def test_refused_login_raises_a_repair_and_no_reset(hass) -> None:
     coord.client = Back()
     await coord._async_update_data()
     assert ir.async_get(hass).async_get_issue(DOMAIN, issue_id) is None
+
+
+class _Coord:
+    run_hint: dict = {}
+
+
+def _restart(clock, direction, now, shift_mono, shift_wall):
+    """Save the clock, 'restart' (monotonic restarts from elsewhere), restore."""
+    from custom_components.switcher_cloud.entity import LocalClock
+    saved = clock.dump()
+    now["mono"] += shift_mono
+    now["wall"] += shift_wall
+    fresh = LocalClock(direction, _Coord(), DID)
+    fresh.restore(saved)
+    return fresh
+
+
+@pytest.mark.parametrize(("direction", "first", "expect"), [
+    (-1, 1290, 1290 - 960),     # Remaining time: 21:30 at switch-on, 16 min later
+    (+1, 1, 1 + 960),           # Time on: 1 s at switch-on, 16 min later
+])
+def test_restart_ignores_the_stale_switch_on_snapshot(monkeypatch, direction, first, expect) -> None:
+    """2026-10-14: after a restart the first poll returned the switch-on
+    snapshot again and the countdown jumped from 5:31 back to 21:30."""
+    from custom_components.switcher_cloud import entity
+    now = {"mono": 1000.0, "wall": 1_800_000_000.0}
+    monkeypatch.setattr(entity.time, "monotonic", lambda: now["mono"])
+    monkeypatch.setattr(entity.time, "time", lambda: now["wall"])
+    st = {"on": True}
+    clock = entity.LocalClock(direction, _Coord(), DID)
+    clock.resync(st, first)
+    now["mono"] += 950
+    now["wall"] += 950
+    clock.resync(st, first)                     # cloud repeats the stale copy
+    clock = _restart(clock, direction, now, shift_mono=-5000, shift_wall=10)
+    clock.resync(st, first)                     # first poll after the restart
+    assert clock.value() == expect
+
+
+def test_restart_takes_a_genuinely_new_value(monkeypatch) -> None:
+    from custom_components.switcher_cloud import entity
+    now = {"mono": 1000.0, "wall": 1_800_000_000.0}
+    monkeypatch.setattr(entity.time, "monotonic", lambda: now["mono"])
+    monkeypatch.setattr(entity.time, "time", lambda: now["wall"])
+    clock = entity.LocalClock(-1, _Coord(), DID)
+    clock.resync({"on": True}, 1290)
+    clock = _restart(clock, -1, now, shift_mono=-5000, shift_wall=600)
+    clock.resync({"on": True}, 300)             # a new run started meanwhile
+    assert clock.value() == 300
+    clock2 = _restart(clock, -1, now, shift_mono=0, shift_wall=30)
+    clock2.resync({"on": False}, 0)             # turned off while HA was down
+    assert clock2.value() == 0

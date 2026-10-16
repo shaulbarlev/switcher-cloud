@@ -9,20 +9,24 @@ refreshed every poll), so it counts down and reads 0 once the device is off.
 """
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 from homeassistant.components.number import NumberEntity, NumberMode
 from homeassistant.const import EntityCategory, UnitOfTime
-from datetime import timedelta
-
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.helpers.event import async_track_time_interval
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
-from .devices import (AUTO_SHUTDOWN_WRITABLE, ON_WALL_AUTO_SHUTDOWN_RANGE,
-                      PLUG_AUTO_SHUTDOWN_RANGE, Family)
-from .entity import LocalClock, SwitcherCloudEntity, async_add_new_devices
+from .devices import (
+    AUTO_SHUTDOWN_WRITABLE,
+    ON_WALL_AUTO_SHUTDOWN_RANGE,
+    PLUG_AUTO_SHUTDOWN_RANGE,
+    Family,
+)
+from .entity import ClockData, LocalClock, SwitcherCloudEntity, async_add_new_devices
 
 PARALLEL_UPDATES = 0
 
@@ -47,7 +51,7 @@ async def async_setup_entry(
     async_add_new_devices(coordinator, entry, async_add_entities, factory)
 
 
-class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
+class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity, RestoreEntity):
     _attr_translation_key = "run_timer"
     _attr_mode = NumberMode.SLIDER
     _attr_native_min_value = 0
@@ -66,6 +70,8 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        if (saved := await self.async_get_last_extra_data()) is not None:
+            self._clock.restore(saved.as_dict())
         self._resync()
         # the value is whole minutes, so a 15 s look is plenty
         self._unsub_tick = async_track_time_interval(
@@ -93,6 +99,10 @@ class SwitcherCloudRunTimer(SwitcherCloudEntity, NumberEntity):
     def _tick(self, _now) -> None:
         if self._clock.was_on and self.available:
             self.async_write_ha_state()
+
+    @property
+    def extra_restore_state_data(self) -> ClockData:
+        return ClockData(self._clock.dump())
 
     @property
     def native_value(self) -> float | None:

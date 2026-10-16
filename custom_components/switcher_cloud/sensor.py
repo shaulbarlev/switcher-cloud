@@ -25,11 +25,12 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from homeassistant.helpers.event import async_track_time_interval
+from homeassistant.helpers.restore_state import RestoreEntity
 from homeassistant.helpers.typing import UNDEFINED
 
 from .coordinator import SwitcherCloudConfigEntry, SwitcherCloudCoordinator
 from .devices import ENERGY_FAMILIES, Family
-from .entity import LocalClock, SwitcherCloudEntity, async_add_new_devices
+from .entity import ClockData, LocalClock, SwitcherCloudEntity, async_add_new_devices
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -227,7 +228,7 @@ def format_duration(seconds: int) -> str:
     return f"{m} minute" + ("" if m == 1 else "s") + f", {sec}"
 
 
-class SwitcherCloudTicker(SwitcherCloudSensor):
+class SwitcherCloudTicker(SwitcherCloudSensor, RestoreEntity):
     """A seconds value that keeps moving between polls (see LocalClock).
     "Remaining time" ticks down, "Time on" ticks up, one write per second
     while the device is on, nothing while it is off."""
@@ -242,6 +243,8 @@ class SwitcherCloudTicker(SwitcherCloudSensor):
 
     async def async_added_to_hass(self) -> None:
         await super().async_added_to_hass()
+        if (saved := await self.async_get_last_extra_data()) is not None:
+            self._clock.restore(saved.as_dict())
         self._resync()
         self._unsub_tick = async_track_time_interval(
             self.hass, self._tick, timedelta(seconds=1))
@@ -274,6 +277,10 @@ class SwitcherCloudTicker(SwitcherCloudSensor):
     @property
     def native_value(self) -> str:
         return format_duration(self._seconds())
+
+    @property
+    def extra_restore_state_data(self) -> ClockData:
+        return ClockData(self._clock.dump())
 
     @property
     def extra_state_attributes(self) -> dict[str, int]:

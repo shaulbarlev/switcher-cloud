@@ -9,6 +9,7 @@ from homeassistant.core import callback
 from homeassistant.helpers.device_registry import CONNECTION_NETWORK_MAC, DeviceInfo, format_mac
 from homeassistant.helpers.entity import Entity
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.restore_state import ExtraStoredData
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
@@ -93,6 +94,14 @@ class LocalClock:
     Used by the Remaining time / Time on sensors and the Run timer number.
     Host entities call clock.resync(st, device_value) on every coordinator
     update and read clock.value().
+
+    Restart: the host entities save the clock (dump) and restore it on start.
+    Without that, the first poll after a restart seeded the clock from the
+    cloud, which keeps the snapshot taken at switch-on: on 2026-10-14 the
+    countdown jumped from 5 min 31 s to 21 min 30 s and Time on from 16 min
+    to 1 s until the device's next real report. After a restore the cloud
+    value is believed only if it differs from the last one seen before the
+    restart; the same number again is that stale copy.
     """
 
     def __init__(self, direction: int, coordinator: Any, did: str) -> None:
@@ -102,6 +111,7 @@ class LocalClock:
         self._seed: int | None = None          # device value at _seed_at
         self._seed_at: float = 0.0             # monotonic
         self._last_device: int | None = None
+        self._restored = False
         self.was_on = False
 
     def value(self) -> int | None:
@@ -109,9 +119,32 @@ class LocalClock:
             return None
         return max(0, self._seed + self._dir * int(time.monotonic() - self._seed_at))
 
+    def dump(self) -> dict[str, Any]:
+        if self._seed is None:
+            return {}
+        return {"seed": self._seed,
+                "seed_wall": time.time() - (time.monotonic() - self._seed_at),
+                "last_device": self._last_device, "was_on": self.was_on}
+
+    def restore(self, saved: dict[str, Any]) -> None:
+        try:
+            seed, seed_wall = int(saved["seed"]), float(saved["seed_wall"])
+        except (KeyError, TypeError, ValueError):
+            return
+        self._seed = seed
+        self._seed_at = time.monotonic() - max(0.0, time.time() - seed_wall)
+        self._last_device = saved.get("last_device")
+        self.was_on = bool(saved.get("was_on"))
+        self._restored = True
+
     def resync(self, st: dict[str, Any], device: int) -> None:
         on = bool(st.get("on"))
         local = self.value()
+        if self._restored:
+            self._restored = False
+            if on and self.was_on and device == self._last_device:
+                self.was_on = on
+                return              # the stale copy from before the restart
         if self._dir < 0:
             hint = self._coordinator.run_hint.get(self._did)
             hint_newer = bool(hint and hint[1] > self._seed_at)
@@ -133,3 +166,13 @@ class LocalClock:
         self.was_on = on
         if seed is not None:
             self._seed, self._seed_at = seed, time.monotonic()
+
+
+class ClockData(ExtraStoredData):
+    """A LocalClock as saved across a restart."""
+
+    def __init__(self, data: dict[str, Any]) -> None:
+        self.data = data
+
+    def as_dict(self) -> dict[str, Any]:
+        return self.data
