@@ -180,6 +180,7 @@ def parse_push(body: bytes) -> dict | None:
 
 HEARTBEAT_INTERVAL = 25       # app: 0x1104 every ~10 s; we can be gentler
 DEAD_AFTER = 90               # s without any received frame = dead session, reconnect
+CONNECT_TIMEOUT = 15          # s for the TCP connect and for the login reply
 RESET_AFTER_TIMEOUTS = 2      # consecutive request timeouts before forcing a reconnect
 PUSH_CMD = 0x0103             # server pushes (device ack / status relay)
 # login errcodes that mean "credentials wrong" (app ReuestError strings:
@@ -298,11 +299,22 @@ class SwitcherClient:
         self.close()
         self.session, self.uid, self.comm_key = 0, 0, b"\x00" * 32
         self._serial = 1000
-        self._sock = socket.create_connection((HOST, PORT), timeout=15)
-        self._raw_send(0x1102, _login_body(self._account, self._password,
-                                           int(time.time())),
-                       encrypted=True, version=b"\x02\x32", control=0x0100)
-        p = parse_packet(self._recv_packet())
+        try:
+            self._sock = socket.create_connection((HOST, PORT), timeout=CONNECT_TIMEOUT)
+            self._raw_send(0x1102, _login_body(self._account, self._password,
+                                               int(time.time())),
+                           encrypted=True, version=b"\x02\x32", control=0x0100)
+            p = parse_packet(self._recv_packet())
+        except socket.timeout as err:
+            # Never leave a socket that did not log in: the listener would take
+            # it for a live session, and the server answers heartbeats on it
+            # (HA 2026-10-16 12:03, stuck 20 min). And a timeout here is not an
+            # idle read: re-raised as a connection error, not socket.timeout.
+            self.close()
+            raise ConnectionError(f"connect/login: {err}") from err
+        except BaseException:
+            self.close()
+            raise
         if p["errcode"] != 0:
             self.close()
             # only credential-class errcodes are auth failures; anything else
@@ -323,13 +335,15 @@ class SwitcherClient:
         _LOGGER.debug("logged in session=%s uid=%s", self.session, self.uid)
 
     def close(self) -> None:
+        # Take the socket first: the listener and request() can both close,
+        # and re-reading self._sock after the check raced into None.close().
         self._ready.clear()
-        if self._sock:
+        s, self._sock = self._sock, None
+        if s is not None:
             with contextlib.suppress(OSError):
-                self._sock.shutdown(socket.SHUT_RDWR)   # wake a blocked recv
+                s.shutdown(socket.SHUT_RDWR)            # wake a blocked recv
             with contextlib.suppress(OSError):
-                self._sock.close()
-            self._sock = None
+                s.close()
 
     # -- listener thread (realtime channel) --------------------------------------
     def start_listener(self, on_push=None, on_reconnect=None) -> None:
@@ -393,7 +407,8 @@ class SwitcherClient:
                         break
                     continue
                 with self._send_lock, contextlib.suppress(OSError):
-                    self._raw_send(0x1104, b"")       # heartbeat on idle
+                    if self._sock is not None:
+                        self._raw_send(0x1104, b"")   # heartbeat on idle
             except SwitcherAuthError as err:
                 # credentials rejected: stop retrying, surface to request()
                 self.auth_error = err

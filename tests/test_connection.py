@@ -273,3 +273,102 @@ def test_dropped_connection_relogs_in_with_a_clean_identity(monkeypatch):
     finally:
         c.stop_listener()
         cloud.stop.set()
+
+
+def _drop(c):
+    with c._send_lock:
+        c._sock.shutdown(socket.SHUT_RDWR)       # the server resets us
+
+
+def _wait_devices(c, seconds):
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            return c.get_devices(), time.time()
+        except api.SwitcherApiError:
+            time.sleep(0.1)
+    return None, time.time()
+
+
+def test_connect_timeout_does_not_kill_the_listener(monkeypatch):
+    """HA 2026-10-16 12:45: reset by peer, then the TCP connect timed out.
+    The timeout was taken for an idle read, a heartbeat went out on no socket
+    and the listener thread died: unavailable for four hours."""
+    monkeypatch.setattr(api, "RETRY_FIRST", 0.05, raising=False)
+    cloud = FakeCloud(dead_after_replies=10**6)
+    cloud.start()
+    c = _client(cloud.port)
+    real = socket.create_connection
+    calls = {"n": 0}
+
+    def flaky(*a, **kw):
+        calls["n"] += 1
+        if calls["n"] == 2:                      # the first reconnect
+            raise socket.timeout("timed out")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(api.socket, "create_connection", flaky)
+    try:
+        c.start_listener()
+        assert c.get_devices() == []
+        _drop(c)
+        devices, _ = _wait_devices(c, 5)
+        assert c._listener.is_alive(), "listener thread died"
+        assert devices == []
+        assert calls["n"] >= 3
+    finally:
+        c.stop_listener()
+        cloud.stop.set()
+
+
+class SilentLoginCloud(FakeCloud):
+    """HA 2026-10-16 12:03: after a reset the second TCP session never got a
+    login reply, but the server kept answering heartbeats, so the half-open
+    socket looked alive. Recovered only when the server dropped it 20 min later."""
+
+    def __init__(self):
+        super().__init__(dead_after_replies=10**6)
+        self.connections = 0
+
+    def _serve(self, conn):
+        with self.lock:
+            self.connections += 1
+            silent = self.connections == 2
+        if not silent:
+            return super()._serve(conn)
+        conn.settimeout(None)                    # the real server keeps it open
+        try:
+            while not self.stop.is_set():
+                hdr = conn.recv(40)
+                if not hdr or len(hdr) < 40:
+                    return
+                total = struct.unpack_from("<H", hdr, 2)[0]
+                if total > 40:
+                    conn.recv(total - 40)
+                p = api.parse_packet(hdr + b"\x00" * (total - 40))
+                if p["cmd"] == 0x1104:
+                    conn.sendall(api.build_packet(0x1104, b"", p["serial"], 0x1234))
+        except OSError:
+            return
+        finally:
+            conn.close()
+
+
+def test_login_that_never_answers_is_abandoned(monkeypatch):
+    monkeypatch.setattr(api, "RETRY_FIRST", 0.05, raising=False)
+    monkeypatch.setattr(api, "CONNECT_TIMEOUT", 1, raising=False)
+    monkeypatch.setattr(api, "HEARTBEAT_INTERVAL", 0.5)
+    cloud = SilentLoginCloud()
+    cloud.start()
+    c = _client(cloud.port)
+    try:
+        c.start_listener()
+        assert c.get_devices() == []
+        _drop(c)
+        devices, _ = _wait_devices(c, 25)        # v1.0.6 code: stuck for good
+        assert devices == [], "stuck on a socket that never logged in"
+        assert cloud.connections >= 3
+        assert c._listener.is_alive()
+    finally:
+        c.stop_listener()
+        cloud.stop.set()
