@@ -1,3 +1,5 @@
+<p align="center"><img src="custom_components/switcher_cloud/brand/icon.png" alt="Switcher Cloud icon" width="128"></p>
+
 # Switcher Cloud for Home Assistant
 
 [![HACS Custom](https://img.shields.io/badge/HACS-Custom-41BDF5.svg)](https://github.com/hacs/integration)
